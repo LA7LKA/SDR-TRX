@@ -56,8 +56,17 @@ ENTRY(Reset_Handler)
 _estack = ORIGIN(RAM) + LENGTH(RAM);    /* end of RAM */
 _sstack = _estack - _Min_Stack_Size;
 /* Generate a link error if heap and stack don't fit into RAM */
-_Min_Heap_Size = 0x200;      /* required amount of heap  */
-_Min_Stack_Size = 0x400; /* required amount of stack */
+/*
+ * Heap: _sbrk() grows the heap from _end up to (_estack - _Min_Stack_Size),
+ * so this value is only the link-time minimum, not a cap. codec2 allocates
+ * its modem and vocoder state with malloc() at freedv_open() time and needs
+ * far more than the CubeMX default of 0x200.
+ *
+ * Stack: fdmdv_demod() places variable-length arrays sized from freedv_nin()
+ * on the stack, so the 0x400 default is not enough once FreeDV is running.
+ */
+_Min_Heap_Size = 0x8000;      /* required amount of heap  */
+_Min_Stack_Size = 0x4000; /* required amount of stack */
 
 /* Specify the memory areas */
 MEMORY

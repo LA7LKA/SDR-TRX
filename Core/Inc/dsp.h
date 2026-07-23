@@ -41,4 +41,17 @@ float agc_process(float x, agc_t *st);
 // -------------------- FM Demod --------------------
 void nbfm_demod(float *I_in, float *Q_in, float *audio_out, int n);
 
+/*
+ * FM discriminator for data, as opposed to nbfm_demod() which is for voice.
+ *
+ * Voice FM wants de-emphasis and AGC; a modem wants neither. The 500 us
+ * de-emphasis in nbfm_demod() rolls off 11.8 dB at 1200 Hz and 23.6 dB at
+ * 4800 Hz, which tilts a data waveform badly across its own band, and the
+ * voice AGC then drives the result into clipping.
+ *
+ * This is the raw phase difference with DC removed, scaled by 1/pi so the
+ * output keeps the +-1.0 convention the rest of the chain uses.
+ */
+void fm_discriminate(const float *I_in, const float *Q_in, float *out, int n);
+
 #endif

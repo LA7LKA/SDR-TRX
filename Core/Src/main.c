@@ -19,12 +19,14 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "string.h"
+#include <stdlib.h>
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "stm32f7xx.h"      // <-- MÅ være først
 #include "arm_math.h"       // <-- CMSIS-DSP
 #include "dsp.h"            // <-- dine DSP-typer
+#include "freedv_chain.h"   // <-- FreeDV 1600 RX-kjede
 #include <math.h>
 
 /* USER CODE END Includes */
@@ -42,7 +44,28 @@
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
 #define TWO_PI 6.28318530718f
-#define BLOCK_SIZE 2048
+/*
+ * Block size is per mode, so the buffers are allocated for the largest case and
+ * the DMA is restarted with the size the current mode wants.
+ *
+ * FreeDV: half a buffer is 1920 samples = 40 ms, and 1920/6 = 320, which is
+ * exactly one FDMDV frame. That makes every block cost the same instead of
+ * alternating cheap/expensive, which is what it takes to stay real time.
+ *
+ * FreeDV 2400B: 96 bits at 4800 baud, so 1920 samples at 48 kHz, the same 40 ms
+ * as 1600. Its modem is already at 48 kHz, so unlike 1600 there is no
+ * resampling on the way in.
+ *
+ * Analog: 256 samples = 5.3 ms. SSB, AM and NBFM do not care much, but CW
+ * break-in does, and 40 ms of round trip delay is very audible on a key.
+ */
+#define BLOCK_SIZE_MAX     3840
+#define BLOCK_SIZE_FREEDV  3840
+#define BLOCK_SIZE_2400B   3840
+#define BLOCK_SIZE_ANALOG   512
+
+// Active size, swapped by radio_set_mode(). Buffers stay BLOCK_SIZE_MAX.
+static volatile uint32_t block_size = BLOCK_SIZE_FREEDV;
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
@@ -82,11 +105,36 @@ UART_HandleTypeDef huart3;
 PCD_HandleTypeDef hpcd_USB_OTG_FS;
 
 /* USER CODE BEGIN PV */
-uint32_t dac_buffer[BLOCK_SIZE] = {0};
-uint32_t adc_buffer[BLOCK_SIZE] = {0};
+uint32_t dac_buffer[BLOCK_SIZE_MAX] = {0};
+uint32_t adc_buffer[BLOCK_SIZE_MAX] = {0};
 
 volatile uint8_t block_ready = 0; // 0: no block ready, 1: first half ready, 2: second half ready
 volatile uint8_t dac_block_processing = 0; // 0: not processing, 1: processing
+
+int freedv_ok = 0;          // set once freedv_chain_init() has succeeded
+
+// RX telemetry, printed once a second over the ST-Link VCP
+volatile uint32_t rx_blocks = 0;   // blocks through process_block()
+volatile float    rx_peak   = 0.0f; // peak |audio| at the modem input
+volatile float    rx_rms    = 0.0f; // rms of the same, to judge peak/rms
+volatile float    rx_adc_peak = 0.0f; // peak |ADC| before any filtering
+volatile uint32_t rx_cycles_max = 0;  // worst-case cycles for one block
+volatile uint32_t rx_fdv_cycles_max = 0; // worst-case cycles inside the FreeDV chain
+static   uint32_t last_report = 0;
+
+// DWT cycle counter, used to measure how much of each block period the DSP
+// actually consumes. One block is block_size/2 samples at 48 kHz.
+static void cyclecount_init(void)
+{
+    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+
+    // Cortex-M7 gates the DWT registers behind the lock access register; without
+    // this CYCCNT stays at 0 and every measurement reads back as zero.
+    DWT->LAR = 0xC5ACCE55;
+
+    DWT->CYCCNT = 0;
+    DWT->CTRL  |= DWT_CTRL_CYCCNTENA_Msk;
+}
 nco_t nco; 
 
 
@@ -202,11 +250,26 @@ static float pre_demod_coeffs[PRE_DEMOD_TAPS] = {
 
 
 
+/*
+ * Scratch shared by ssb_process_block() and nbfm_process_block().
+ *
+ * process_block() dispatches to exactly one of them, so they are never live at
+ * the same time and there is no reason for each to hold its own statics. Both
+ * also used to over-allocate: the interleaved buffers only ever index up to
+ * 2*n, and the real buffers up to n, where n = BLOCK_SIZE/2.
+ *
+ * Layout is 10*n floats, which is what nbfm needs (4 real + 3 interleaved);
+ * ssb uses 9*n of it. Keeping these separate is what made BLOCK_SIZE 3840
+ * overflow RAM.
+ */
+#define SCRATCH_N (BLOCK_SIZE_MAX / 2)
+static float dsp_scratch[10 * SCRATCH_N];
+
 arm_fir_instance_f32 pre_fm_I;
 arm_fir_instance_f32 pre_fm_Q;
 
-static float pre_fm_state_I[PRE_DEMOD_TAPS + BLOCK_SIZE/2];
-static float pre_fm_state_Q[PRE_DEMOD_TAPS + BLOCK_SIZE/2];
+static float pre_fm_state_I[PRE_DEMOD_TAPS + BLOCK_SIZE_MAX/2];
+static float pre_fm_state_Q[PRE_DEMOD_TAPS + BLOCK_SIZE_MAX/2];
 
 /* USER CODE END PV */
 
@@ -229,13 +292,51 @@ static void MX_ADC1_Init(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
+// USART3 is wired to the ST-Link virtual COM port (/dev/ttyACM0), 115200 8N1.
+void uart_puts(const char *s)
+{
+    HAL_UART_Transmit(&huart3, (uint8_t *)s, strlen(s), 100);
+}
+
+// Integer-only formatting on purpose: printf("%f") needs -u _printf_float,
+// which nano.specs leaves out.
+static void uart_kv(const char *key, int value)
+{
+    char buf[48];
+    char *p = buf;
+    int   n = value;
+    int   digits = 0;
+    char  tmp[12];
+
+    while (*key)
+        *p++ = *key++;
+    *p++ = '=';
+
+    if (n < 0) { *p++ = '-'; n = -n; }
+    do { tmp[digits++] = '0' + (n % 10); n /= 10; } while (n);
+    while (digits)
+        *p++ = tmp[--digits];
+
+    *p++ = ' ';
+    *p   = '\0';
+
+    uart_puts(buf);
+}
+
+// If block_ready is still set when the next half completes, the main loop did
+// not keep up and a block of samples is lost. FreeDV cannot tolerate that: the
+// modem needs an unbroken sample stream to hold sync.
+volatile uint32_t rx_overruns = 0;
+
 void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef *hadc)
 {
+    if (block_ready) rx_overruns++;
     block_ready = 1;
 }
 
 void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
 {
+    if (block_ready) rx_overruns++;
     block_ready = 2;
 }
 
@@ -324,7 +425,7 @@ static float hilbert_coeffs[HILBERT_TAPS] = {
 
 
 
-static float hilbert_state[HILBERT_TAPS + BLOCK_SIZE/2];
+static float hilbert_state[HILBERT_TAPS + BLOCK_SIZE_MAX/2];
 arm_fir_instance_f32 hilbert;
 
 
@@ -353,7 +454,7 @@ static float if_coeffs[101] = {
 
 
 
-static float if_state[IF_TAPS + BLOCK_SIZE/2];
+static float if_state[IF_TAPS + BLOCK_SIZE_MAX/2];
 arm_fir_instance_f32 pre_demod_filter;
 
 #define AUDIO_TAPS 63
@@ -373,35 +474,83 @@ static float audio_lpf_coeffs[AUDIO_TAPS] = {
     -0.0022, -0.0019, -0.0016, -0.0013, -0.0010, -0.0007
 };
 
-static float audio_state[AUDIO_TAPS + BLOCK_SIZE/2];
+static float audio_state[AUDIO_TAPS + BLOCK_SIZE_MAX/2];
 arm_fir_instance_f32 audio_lpf;
 
 
 #define MODE_NBFM 0
 #define MODE_USB  1
 #define MODE_LSB  2
+#define MODE_FREEDV 3   // FreeDV 1600, received as USB
+#define MODE_FREEDV_2400B 4  // FreeDV 2400B, through a normal FM audio path
 
-int MODE = MODE_NBFM;  // default mode
+int MODE = MODE_FREEDV_2400B;  // default mode
+
+/*
+ * Fill an interleaved cos/sin buffer for the IF mixer.
+ *
+ * Recursive phasor rotation rather than cosf()/sinf() per sample: two libm
+ * calls per sample was one of the larger costs in the block. Magnitude drifts
+ * slowly, so it is renormalised once per call instead of per sample.
+ */
+static void nco_block_iq(float *NCO_buf, int n)
+{
+    static float osc_re = 1.0f, osc_im = 0.0f;
+    static float step_re = 1.0f, step_im = 0.0f;
+    static float step_dphi = 0.0f;
+
+    if (step_dphi != nco.dphi)
+    {
+        step_dphi = nco.dphi;
+        step_re   = cosf(nco.dphi);
+        step_im   = sinf(nco.dphi);
+    }
+
+    for (int i = 0; i < n; i++)
+    {
+        NCO_buf[2*i + 0] = osc_re;
+        NCO_buf[2*i + 1] = osc_im;
+
+        float nre = osc_re * step_re - osc_im * step_im;
+        float nim = osc_re * step_im + osc_im * step_re;
+
+        osc_re = nre;
+        osc_im = nim;
+    }
+
+    float mag2 = osc_re * osc_re + osc_im * osc_im;
+    float g    = 1.5f - 0.5f * mag2;   // one Newton step toward 1/sqrt(mag2)
+
+    osc_re *= g;
+    osc_im *= g;
+}
 
 void ssb_process_block(uint32_t *in, uint32_t *out, int n)
 {
-    static float I_buf[BLOCK_SIZE/2];
-    static float Q_buf[BLOCK_SIZE/2];
+    // Carved out of the shared scratch pool; see dsp_scratch above.
+    float *I_buf     = &dsp_scratch[0 * SCRATCH_N];
+    float *Q_buf     = &dsp_scratch[1 * SCRATCH_N];
+    float *audio_buf = &dsp_scratch[2 * SCRATCH_N];
 
-    static float IQ_in[BLOCK_SIZE];     // interleaved I/Q
-    static float NCO_buf[BLOCK_SIZE];   // interleaved cos/sin
-    static float IQ_mix[BLOCK_SIZE];    // interleaved I/Q
-
-    static float audio_buf[BLOCK_SIZE/2];
+    float *IQ_in     = &dsp_scratch[3 * SCRATCH_N];   // interleaved I/Q,   2n
+    float *NCO_buf   = &dsp_scratch[5 * SCRATCH_N];   // interleaved cos/sin, 2n
+    float *IQ_mix    = &dsp_scratch[7 * SCRATCH_N];   // interleaved I/Q,   2n
 
     // ---------------------------------------------------------
     // 1) ADC → normalisert I
     // ---------------------------------------------------------
+    float adc_peak = 0.0f;
+
     for (int i = 0; i < n; i++)
     {
         uint32_t raw = in[i] & 0x0FFF;
         I_buf[i] = ((float)raw - 2048.0f) / 2048.0f;
+
+        float a = fabsf(I_buf[i]);
+        if (a > adc_peak) adc_peak = a;
     }
+
+    rx_adc_peak = adc_peak;
 
     // ---------------------------------------------------------
     // 2) Hilbert → Q (for SSB og FM)
@@ -420,15 +569,7 @@ void ssb_process_block(uint32_t *in, uint32_t *out, int n)
     // ---------------------------------------------------------
     // 4) NCO → interleaved cos/sin
     // ---------------------------------------------------------
-    for (int i = 0; i < n; i++)
-    {
-        float cs = cosf(nco.phase);
-        float sn = sinf(nco.phase);
-        nco_step(&nco);
-
-        NCO_buf[2*i + 0] = cs;
-        NCO_buf[2*i + 1] = sn;
-    }
+    nco_block_iq(NCO_buf, n);
 
     // ---------------------------------------------------------
     // 5) Kompleks mixing
@@ -465,6 +606,35 @@ void ssb_process_block(uint32_t *in, uint32_t *out, int n)
         for (int i = 0; i < n; i++)
             audio_buf[i] = I_buf[i] - Q_buf[i];
     }
+    else if (MODE == MODE_FREEDV)
+    {
+        // FreeDV rides on an ordinary SSB signal, so demodulate as USB first.
+        float peak = 0.0f;
+
+        for (int i = 0; i < n; i++)
+        {
+            audio_buf[i] = I_buf[i] + Q_buf[i];
+
+            float a = fabsf(audio_buf[i]);
+            if (a > peak) peak = a;
+        }
+
+        rx_peak = peak;
+        rx_blocks++;
+
+        // 48k -> 8k -> FreeDV 1600 demod -> 8k -> 48k
+        if (freedv_ok)
+        {
+            uint32_t t0 = DWT->CYCCNT;
+
+            freedv_chain_put_audio48(audio_buf, n);
+            freedv_chain_get_speech48(audio_buf, n);
+
+            uint32_t dt = DWT->CYCCNT - t0;
+            if (dt > rx_fdv_cycles_max)
+                rx_fdv_cycles_max = dt;
+        }
+    }
     else
     {
         for (int i = 0; i < n; i++)
@@ -493,15 +663,15 @@ void ssb_process_block(uint32_t *in, uint32_t *out, int n)
 
 void nbfm_process_block(uint32_t *in, uint32_t *out, int n)
 {
-    static float I_if[BLOCK_SIZE];
-    static float Q_if[BLOCK_SIZE];
+    // Carved out of the shared scratch pool; see dsp_scratch above.
+    float *I_if          = &dsp_scratch[0 * SCRATCH_N];
+    float *Q_if          = &dsp_scratch[1 * SCRATCH_N];
+    float *audio_fm      = &dsp_scratch[2 * SCRATCH_N];   // FM-demod audio
+    float *audio_lpf_out = &dsp_scratch[3 * SCRATCH_N];
 
-    static float IQ_in[BLOCK_SIZE * 2];    // interleaved I/Q
-    static float NCO_buf[BLOCK_SIZE * 2];  // interleaved cos/sin
-    static float IQ_mix[BLOCK_SIZE * 2];   // interleaved I/Q etter mixing
-
-    static float audio_fm[BLOCK_SIZE];     // FM-demod audio (float)
-    static float audio_lpf_out[BLOCK_SIZE];
+    float *IQ_in         = &dsp_scratch[4 * SCRATCH_N];   // interleaved I/Q,   2n
+    float *NCO_buf       = &dsp_scratch[6 * SCRATCH_N];   // interleaved cos/sin, 2n
+    float *IQ_mix        = &dsp_scratch[8 * SCRATCH_N];   // interleaved I/Q,   2n
 
     // -----------------------------
     // 1) ADC → normalisert IF (I)
@@ -584,8 +754,8 @@ void nbfm_process_block(uint32_t *in, uint32_t *out, int n)
 
 void nbfm_tx_process_block(uint32_t *in, uint32_t *out, int n)
 {
-    static float audio_in[BLOCK_SIZE];
-    static float audio_filtered[BLOCK_SIZE];
+    static float audio_in[BLOCK_SIZE_MAX];
+    static float audio_filtered[BLOCK_SIZE_MAX];
     static float phase = 0.0f;
 
     const float kf = 2.0f * M_PI * 5000.0f / 48000.0f;   // FM deviation
@@ -616,16 +786,253 @@ void nbfm_tx_process_block(uint32_t *in, uint32_t *out, int n)
 }
 
 
+void nbfm_init(float if_freq_hz, float fs_hz);
+
+/*
+ * Filters are (re)initialised here rather than inline in main() so a mode
+ * change can flush them. The FIR instances are sized for BLOCK_SIZE_MAX;
+ * calling them later with a smaller block is safe, the state buffer is simply
+ * bigger than that call needs.
+ */
+static void dsp_filters_init(void)
+{
+    // ssb_process_block() mixes with 'nco', not the 'nco_if' that nbfm_init()
+    // sets up, so it needs its own init or dphi stays 0 and nothing is
+    // downconverted.
+    nco_init(&nco, 12000.0f, 48000.0f);
+
+    // NCO for the FM path, plus pre_fm_I/Q and the post-demod audio LPF.
+    nbfm_init(12000.0f, 48000.0f);
+
+    // Hilbert for SSB
+    arm_fir_init_f32(&hilbert,
+                     HILBERT_TAPS,
+                     hilbert_coeffs,
+                     hilbert_state,
+                     BLOCK_SIZE_MAX/2);
+
+}
+
+// The DAC idles at mid-scale; zero would slam the output to the rail.
+#define DAC_MID 2048
+
+static void audio_dma_start(void)
+{
+    for (uint32_t i = 0; i < BLOCK_SIZE_MAX; i++)
+        dac_buffer[i] = DAC_MID;
+
+    memset(adc_buffer, 0, sizeof(adc_buffer));
+
+    block_ready          = 0;
+    dac_block_processing = 0;
+
+    HAL_DAC_Start_DMA(&hdac, DAC_CHANNEL_1, dac_buffer, block_size, DAC_ALIGN_12B_R);
+    HAL_ADC_Start_DMA(&hadc1, adc_buffer, block_size);
+}
+
+/*
+ * Switch demodulator, and with it the block size.
+ *
+ * FreeDV wants 40 ms blocks so each one is exactly a modem frame; the analog
+ * modes want short ones so CW break-in is not buried under latency. The DMA
+ * length is fixed when it is started, so changing it means stopping and
+ * restarting both streams.
+ */
+// Kept in one place so startup and a later mode change cannot disagree.
+uint32_t block_size_for(int mode)
+{
+    if (mode == MODE_FREEDV)       return BLOCK_SIZE_FREEDV;
+    if (mode == MODE_FREEDV_2400B) return BLOCK_SIZE_2400B;
+    return BLOCK_SIZE_ANALOG;
+}
+
+int mode_is_freedv(int mode)
+{
+    return mode == MODE_FREEDV || mode == MODE_FREEDV_2400B;
+}
+
+int chain_mode_for(int mode)
+{
+    return (mode == MODE_FREEDV_2400B) ? FREEDV_CHAIN_MODE_2400B
+                                       : FREEDV_CHAIN_MODE_1600;
+}
+
+/*
+ * Largest block malloc() can still hand out. codec2 allocates its modem state
+ * in a few big chunks (2400A's f_dc alone is about 65K), so this is a better
+ * predictor of whether freedv_open() will succeed than total free bytes.
+ */
+static uint32_t heap_largest_free(void)
+{
+    uint32_t lo = 0, hi = 256u * 1024u;
+
+    while (lo < hi)
+    {
+        uint32_t mid = (lo + hi + 1u) / 2u;
+        void    *p   = malloc(mid);
+
+        if (p) { free(p); lo = mid; }
+        else   { hi = mid - 1u; }
+    }
+    return lo;
+}
+
+void radio_set_mode(int mode)
+{
+    uint32_t want = block_size_for(mode);
+
+    if (mode == MODE && want == block_size)
+        return;
+
+    HAL_ADC_Stop_DMA(&hadc1);
+    HAL_DAC_Stop_DMA(&hdac, DAC_CHANNEL_1);
+
+    MODE       = mode;
+    block_size = want;
+
+    // Filter history and the FreeDV resamplers hold audio from the old mode at
+    // the old block size, so flush both rather than let it bleed through.
+    dsp_filters_init();
+
+    if (mode_is_freedv(mode))
+    {
+        // 1600 and 2400A are different modems, so this reopens codec2 rather
+        // than just flushing what is buffered.
+        freedv_ok = (freedv_chain_init(chain_mode_for(mode)) == 0);
+
+        uart_puts(freedv_ok ? "freedv: ready\r\n"
+                            : "freedv: init FAILED\r\n");
+    }
+    else if (freedv_ok)
+    {
+        freedv_chain_reset();
+    }
+
+    audio_dma_start();
+}
+
+/*
+ * FreeDV 2400A receive.
+ *
+ * 2400A rides inside an ordinary FM channel, so this is the FM path, not the
+ * SSB one: mix the 12 kHz IF down, filter the channel wide enough to keep the
+ * 4FSK tones intact, and FM demodulate. What comes out is the modem's own
+ * 48 kHz signal, which goes straight to the demodulator without resampling.
+ *
+ * Deliberately no post-demod audio LPF: the voice filter would cut the 4800 Hz
+ * tone and the modem would never sync.
+ */
+void freedv2400b_process_block(uint32_t *in, uint32_t *out, int n)
+{
+    float *I_buf     = &dsp_scratch[0 * SCRATCH_N];
+    float *Q_buf     = &dsp_scratch[1 * SCRATCH_N];
+    float *audio_buf = &dsp_scratch[2 * SCRATCH_N];
+
+    float *IQ_in     = &dsp_scratch[3 * SCRATCH_N];
+    float *NCO_buf   = &dsp_scratch[5 * SCRATCH_N];
+    float *IQ_mix    = &dsp_scratch[7 * SCRATCH_N];
+
+    float adc_peak = 0.0f;
+
+    for (int i = 0; i < n; i++)
+    {
+        uint32_t raw = in[i] & 0x0FFF;
+        I_buf[i] = ((float)raw - 2048.0f) / 2048.0f;
+
+        float a = fabsf(I_buf[i]);
+        if (a > adc_peak) adc_peak = a;
+    }
+    rx_adc_peak = adc_peak;
+
+    arm_fir_f32(&hilbert, I_buf, Q_buf, n);
+
+    for (int i = 0; i < n; i++)
+    {
+        IQ_in[2*i + 0] = I_buf[i];
+        IQ_in[2*i + 1] = Q_buf[i];
+    }
+
+    nco_block_iq(NCO_buf, n);
+    arm_cmplx_mult_cmplx_f32(IQ_in, NCO_buf, IQ_mix, n);
+
+    for (int i = 0; i < n; i++)
+    {
+        I_buf[i] = IQ_mix[2*i + 0];
+        Q_buf[i] = IQ_mix[2*i + 1];
+    }
+
+    // The ordinary voice channel filter is right here: 2400B is specified to
+    // survive a 300-3000 Hz audio path, so it fits inside NBFM as it stands.
+    arm_fir_f32(&pre_fm_I, I_buf, I_buf, n);
+    arm_fir_f32(&pre_fm_Q, Q_buf, Q_buf, n);
+
+    // Data discriminator, not the voice one: no de-emphasis, no voice AGC.
+    fm_discriminate(I_buf, Q_buf, audio_buf, n);
+
+    /*
+     * Peak alone cannot tell an over-deviated signal from an occasional noise
+     * spike, so track rms as well. A clean FM data signal sits around peak/rms
+     * of 3-4; a much larger ratio means the discriminator is spiking, and a
+     * peak near 1.0 with high rms means the deviation itself is too big and
+     * atan2 is wrapping.
+     */
+    float peak = 0.0f;
+    float sumsq = 0.0f;
+
+    for (int i = 0; i < n; i++)
+    {
+        float a = fabsf(audio_buf[i]);
+        if (a > peak) peak = a;
+        sumsq += audio_buf[i] * audio_buf[i];
+    }
+
+    rx_peak = peak;
+    rx_rms  = sqrtf(sumsq / (float)n);
+    rx_blocks++;
+
+    if (freedv_ok)
+    {
+        uint32_t t0 = DWT->CYCCNT;
+
+        freedv_chain_put_audio48(audio_buf, n);
+        freedv_chain_get_speech48(audio_buf, n);
+
+        uint32_t dt = DWT->CYCCNT - t0;
+        if (dt > rx_fdv_cycles_max)
+            rx_fdv_cycles_max = dt;
+    }
+
+    for (int i = 0; i < n; i++)
+    {
+        float y = audio_buf[i] * 1500.0f + 2048.0f;
+
+        if (y < 0.0f)    y = 0.0f;
+        if (y > 4095.0f) y = 4095.0f;
+
+        out[i] = (uint32_t)y;
+    }
+}
+
 void process_block(uint32_t *in, uint32_t *out, int n)
 {
+    uint32_t t0 = DWT->CYCCNT;
+
     if (MODE == MODE_NBFM)
     {
         nbfm_process_block(in, out, n);
+    }
+    else if (MODE == MODE_FREEDV_2400B)
+    {
+        freedv2400b_process_block(in, out, n);  // FM-bane, ikke SSB
     }
     else
     {
         ssb_process_block(in, out, n);  // din eksisterende SSB-pipe
     }
+
+    uint32_t dt = DWT->CYCCNT - t0;
+    if (dt > rx_cycles_max)
+        rx_cycles_max = dt;
 }
 
 
@@ -639,13 +1046,13 @@ arm_fir_init_f32(&pre_fm_I,
                  PRE_DEMOD_TAPS,
                  pre_demod_coeffs,
                  pre_fm_state_I,
-                 BLOCK_SIZE/2);
+                 BLOCK_SIZE_MAX/2);
 
 arm_fir_init_f32(&pre_fm_Q,
                  PRE_DEMOD_TAPS,
                  pre_demod_coeffs,
                  pre_fm_state_Q,
-                 BLOCK_SIZE/2);
+                 BLOCK_SIZE_MAX/2);
 
 
     // Audio LPF etter FM-demod
@@ -653,7 +1060,7 @@ arm_fir_init_f32(&pre_fm_Q,
                      AUDIO_TAPS,
                      audio_lpf_coeffs,
                      audio_state,
-                     BLOCK_SIZE/2);
+                     BLOCK_SIZE_MAX/2);
 }
 
 /* USER CODE END 0 */
@@ -671,6 +1078,12 @@ int main(void)
 
   /* MPU Configuration--------------------------------------------------------*/
   MPU_Config();
+
+  // At 216 MHz flash runs with 7 wait states, so without the instruction cache
+  // every fetch stalls. Enabling it costs nothing in correctness (unlike the
+  // D-cache, which would need coherency handling for the ADC/DAC DMA buffers)
+  // and is worth several times the throughput on this DSP path.
+  SCB_EnableICache();
 
   /* MCU Configuration--------------------------------------------------------*/
 
@@ -700,46 +1113,37 @@ int main(void)
   MX_ADC1_Init();
   /* USER CODE BEGIN 2 */
 
-  //nco_init(&nco, 12000.0f, 48000.0f);
-  nbfm_init(12000.0f, 48000.0f);
+  dsp_filters_init();
 
-// Kun én init av pre_demod_filter
-/*
-arm_fir_init_f32(&pre_demod_filter,
-                 IF_TAPS,
-                 if_coeffs,
-                 if_state,
-                 BLOCK_SIZE/2);
-*/
-// Hilbert for SSB
-arm_fir_init_f32(&hilbert,
-                 HILBERT_TAPS,
-                 hilbert_coeffs,
-                 hilbert_state,
-                 BLOCK_SIZE/2);
-
-                 /*
-//Pre FM-demod filter
-arm_fir_init_f32(&pre_demod_filter,
-                 PRE_DEMOD_TAPS,
-                 pre_demod_coeffs,
-                 pre_demod_state_I,
-                 BLOCK_SIZE/2);
-
-// Audio LPF etter FM-demod
-arm_fir_init_f32(&audio_lpf,
-                 AUDIO_TAPS,
-                 audio_lpf_coeffs,
-                 audio_state,
-                 BLOCK_SIZE/2);
-*/
-
-
-  HAL_DAC_Start_DMA(&hdac, DAC_CHANNEL_1, dac_buffer, BLOCK_SIZE, DAC_ALIGN_12B_R);
-  HAL_ADC_Start_DMA(&hadc1, adc_buffer, BLOCK_SIZE);
+  block_size = block_size_for(MODE);
+  audio_dma_start();
 
   //Start TIM6
   HAL_TIM_Base_Start(&htim6);
+
+  // Brought up after the DMAs are running, and deliberately not fatal: if
+  // codec2 cannot allocate we still want the radio and the UART alive so the
+  // failure is visible instead of silently hanging the board.
+  cyclecount_init();
+
+  uart_puts("\r\n=== qrp-sdr-trx ===\r\n");
+
+  uart_kv("heap_largest", (int)heap_largest_free());
+  uart_puts("\r\n");
+
+  freedv_ok = mode_is_freedv(MODE)
+            ? (freedv_chain_init(chain_mode_for(MODE)) == 0)
+            : 0;
+
+  if (freedv_ok)
+      uart_puts(MODE == MODE_FREEDV_2400B ? "freedv: 2400B RX ready\r\n"
+                                          : "freedv: 1600 RX ready\r\n");
+  else if (mode_is_freedv(MODE))
+      uart_puts("freedv: init FAILED (out of heap?) - audio will be silent\r\n");
+
+  uart_kv("heap_left", (int)heap_largest_free());
+  uart_puts("\r\n");
+
 
   /* USER CODE END 2 */
 
@@ -748,26 +1152,61 @@ arm_fir_init_f32(&audio_lpf,
   while (1)
   {
 
-    if(dac_block_processing == 1)
-    {
-        nbfm_tx_process_block(&adc_buffer[0], &dac_buffer[0], BLOCK_SIZE/2);
-        dac_block_processing = 0;
-    }
-    else if(dac_block_processing == 2)
-    {
-        nbfm_tx_process_block(&adc_buffer[BLOCK_SIZE/2], &dac_buffer[BLOCK_SIZE/2], BLOCK_SIZE/2);
-        dac_block_processing = 0;
-    }
-    /*
+    // RX path. Swap this with the nbfm_tx_process_block() block below to go
+    // back to transmit testing.
     if (block_ready == 1)
     {
-      process_block(&adc_buffer[0], &dac_buffer[0], BLOCK_SIZE/2);
+      process_block(&adc_buffer[0], &dac_buffer[0], block_size/2);
       block_ready = 0;
     }
     else if (block_ready == 2)
     {
-      process_block(&adc_buffer[BLOCK_SIZE/2], &dac_buffer[BLOCK_SIZE/2], BLOCK_SIZE/2);
+      process_block(&adc_buffer[block_size/2], &dac_buffer[block_size/2], block_size/2);
       block_ready = 0;
+    }
+
+    // Once a second: are blocks flowing, is there signal, has the modem synced?
+    if (HAL_GetTick() - last_report >= 1000)
+    {
+        last_report = HAL_GetTick();
+
+        // Derived from the active block size so it stays correct across a
+        // mode change: at 48 kHz there are 48 samples per millisecond, and the
+        // core runs at 216 MHz.
+        // In microseconds, not milliseconds: an analog block is 5.33 ms, and
+        // rounding that to 5 would overstate the load by 6 %.
+        const uint32_t block_us     = (block_size / 2) * 1000u / 48u;
+        const uint32_t block_cycles = 216u * block_us;
+        uint32_t load_pct = (uint32_t)(((uint64_t)rx_cycles_max * 100u) / block_cycles);
+
+        uart_kv("mode", MODE);
+        uart_kv("blocks", (int)rx_blocks);
+        uart_kv("ovr", (int)rx_overruns);
+        uart_kv("load_pct", (int)load_pct);
+        uart_kv("us_max", (int)(rx_cycles_max / 216));
+        uart_kv("us_fdv", (int)(rx_fdv_cycles_max / 216));
+        uart_kv("adc_x1000", (int)(rx_adc_peak * 1000.0f));
+        uart_kv("peak_x1000", (int)(rx_peak * 1000.0f));
+        uart_kv("rms_x1000", (int)(rx_rms * 1000.0f));
+        uart_kv("sync", freedv_chain_synced());
+        uart_kv("snr_x10", (int)(freedv_chain_snr() * 10.0f));
+        uart_puts("\r\n");
+
+        rx_blocks     = 0;
+        rx_overruns   = 0;
+        rx_cycles_max = 0;
+        rx_fdv_cycles_max = 0;
+    }
+    /*
+    if(dac_block_processing == 1)
+    {
+        nbfm_tx_process_block(&adc_buffer[0], &dac_buffer[0], block_size/2);
+        dac_block_processing = 0;
+    }
+    else if(dac_block_processing == 2)
+    {
+        nbfm_tx_process_block(&adc_buffer[block_size/2], &dac_buffer[block_size/2], block_size/2);
+        dac_block_processing = 0;
     }
 */
 

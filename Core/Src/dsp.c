@@ -72,6 +72,33 @@ float agc_process(float x, agc_t *st)
     return x * st->gain;
 }
 
+// -------------------- FM Discriminator (data) --------------------
+void fm_discriminate(const float *I_in, const float *Q_in, float *out, int n)
+{
+    static float prev_I = 0.0f;
+    static float prev_Q = 0.0f;
+
+    static dc_block_t dc = {0};
+
+    const float inv_pi = 1.0f / (float)M_PI;
+
+    for (int i = 0; i < n; i++)
+    {
+        float I = I_in[i];
+        float Q = Q_in[i];
+
+        float re = I * prev_I + Q * prev_Q;
+        float im = I * prev_Q - Q * prev_I;
+
+        prev_I = I;
+        prev_Q = Q;
+
+        // atan2 spans +-pi; normalise so a full-scale deviation is +-1.0 and
+        // the modem input cannot clip.
+        out[i] = dc_block(atan2f(im, re), &dc) * inv_pi;
+    }
+}
+
 // -------------------- FM Demod --------------------
 void nbfm_demod(float *I_in, float *Q_in, float *audio_out, int n)
 {

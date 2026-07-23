@@ -68,7 +68,81 @@ Drivers/STM32F7xx_HAL_Driver/Src/stm32f7xx_ll_usb.c \
 Core/Src/system_stm32f7xx.c \
 Core/Src/sysmem.c \
 Core/Src/syscalls.c  \
-Core/src/dsp.c
+Core/Src/dsp.c \
+Core/Src/freedv_chain.c
+
+# codec2 / FreeDV library sources (mirrors CODEC2_SRCS in codec2/src/CMakeLists.txt)
+# Kept in its own variable so codec2 can be given its own compile flags below.
+C_SOURCES_CODEC2 = \
+codec2/src/dump.c \
+codec2/src/lpc.c \
+codec2/src/nlp.c \
+codec2/src/postfilter.c \
+codec2/src/sine.c \
+codec2/src/codec2.c \
+codec2/src/codec2_fft.c \
+codec2/src/cohpsk.c \
+codec2/src/codec2_fifo.c \
+codec2/src/fdmdv.c \
+codec2/src/fm.c \
+codec2/src/fsk.c \
+codec2/src/fmfsk.c \
+codec2/src/kiss_fft.c \
+codec2/src/kiss_fftr.c \
+codec2/src/linreg.c \
+codec2/src/interp.c \
+codec2/src/lsp.c \
+codec2/src/mbest.c \
+codec2/src/newamp1.c \
+codec2/src/ofdm.c \
+codec2/src/ofdm_mode.c \
+codec2/src/phase.c \
+codec2/src/quantise.c \
+codec2/src/pack.c \
+codec2/src/golay23.c \
+codec2/src/freedv_api.c \
+codec2/src/freedv_1600.c \
+codec2/src/freedv_700.c \
+codec2/src/freedv_2020.c \
+codec2/src/freedv_fsk.c \
+codec2/src/freedv_vhf_framing.c \
+codec2/src/freedv_data_channel.c \
+codec2/src/varicode.c \
+codec2/src/modem_stats.c \
+codec2/src/mpdecode_core.c \
+codec2/src/phi0.c \
+codec2/src/gp_interleaver.c \
+codec2/src/interldpc.c \
+codec2/src/filter.c \
+codec2/src/HRA_112_112.c \
+codec2/src/HRA_56_56.c \
+codec2/src/HRAb_396_504.c \
+codec2/src/H_256_768_22.c \
+codec2/src/H_256_512_4.c \
+codec2/src/HRAa_1536_512.c \
+codec2/src/H_128_256_5.c \
+codec2/src/H_2064_516_sparse.c \
+codec2/src/H_4096_8192_3d.c \
+codec2/src/H_16200_9720.c \
+codec2/src/H_1024_2048_4f.c \
+codec2/src/H_212_158.c \
+codec2/src/ldpc_codes.c \
+codec2/src/lpcnet_freq.c \
+codec2/src/reliable_text.c \
+codec2/build/src/codebook.c \
+codec2/build/src/codebookd.c \
+codec2/build/src/codebookjmv.c \
+codec2/build/src/codebookge.c \
+codec2/build/src/codebooknewamp1.c \
+codec2/build/src/codebooknewamp1_energy.c \
+codec2/build/src/codebooknewamp2.c \
+codec2/build/src/codebooknewamp2_energy.c
+
+C_SOURCES += $(C_SOURCES_CODEC2)
+
+
+
+
 
 # ASM sources
 ASM_SOURCES =  \
@@ -150,6 +224,54 @@ endif
 
 # Generate dependency information
 CFLAGS += -MMD -MP -MF"$(@:%.o=%.d)"
+
+# Add codec2 include paths
+CFLAGS += -Icodec2/src -Icodec2 -Icodec2/build -Icodec2/build/codec2 -DGIT_HASH="\"embedded\""
+
+# codec2 mode selection.
+# Building every FreeDV/codec2 mode overflows the 1024K flash, mostly via the
+# OFDM modes' LDPC matrices (H_16200_9720 alone is 350K). Disable all modes by
+# default and enable only what we use, as codec2/stm32/CMakeLists.txt does.
+#
+# FreeDV 1600 = codec2 1300 vocoder + FDMDV modem, no LDPC.
+# Footprint with only these enabled: ~107K flash, ~56K RAM.
+# Adding 700D/700E pulls in OFDM + LDPC and takes flash to ~93% of 1024K.
+#
+# 2400B is designed to pass through a commodity FM radio and shares the codec2
+# 1300 vocoder with 1600, so it is cheap in both flash and RAM.
+CFLAGS += \
+-DFREEDV_MODE_EN_DEFAULT=0 \
+-DFREEDV_MODE_1600_EN=1 \
+-DFREEDV_MODE_2400B_EN=1 \
+-DCODEC2_MODE_EN_DEFAULT=0 \
+-DCODEC2_MODE_1300_EN=1
+
+# __EMBEDDED__ drops the parts of struct MODEM_STATS that only exist to feed a
+# GUI: the scatter plot buffer COMP rx_symbols[320][51] is 130K on its own, and
+# it sits inside struct freedv, which freedv_open() allocates in one malloc.
+# Without this, freedv_open() asks for 140K and fails on a 320K part.
+# codec2/stm32/CMakeLists.txt sets the same define.
+CFLAGS += -D__EMBEDDED__
+
+#######################################
+# codec2-only compile flags
+#
+# The FPU is fpv5-sp-d16, i.e. single precision only, so every double operation
+# is emulated in software at hundreds of cycles a go. Unsuffixed literals like
+# 1.0 are doubles in C and promote whole float expressions along with them, and
+# codec2 is full of them. -fsingle-precision-constant makes those literals
+# float, which keeps the arithmetic in hardware.
+#
+# Scoped to codec2 rather than the whole project so the HAL keeps its stock
+# semantics. codec2/stm32/CMakeLists.txt uses the same flag.
+#######################################
+CODEC2_OBJECTS = $(addprefix $(BUILD_DIR)/,$(notdir $(C_SOURCES_CODEC2:.c=.o)))
+
+# -O3 overrides the project's -Og for codec2 only. -Og exists to keep code
+# steppable, which is worth nothing in a library we are not debugging and costs
+# a lot in a modem that has to keep up with real time. This comes after $(OPT)
+# on the command line, and the last -O wins.
+$(CODEC2_OBJECTS): CFLAGS += -fsingle-precision-constant -O3
 
 
 #######################################
