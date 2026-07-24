@@ -1,17 +1,18 @@
 options:
   parameters:
-    author: oystein
+    author: LA7LKA
     catch_exceptions: 'True'
     category: '[GRC Hier Blocks]'
     cmake_opt: ''
     comment: ''
     copyright: ''
-    description: ''
+    description: AM receiver using the demod chain proven in am_loopback -- envelope
+      via complex_to_mag plus a DC blocker, not analog_am_demod_cf.
     gen_cmake: 'On'
     gen_linking: dynamic
     generate_options: qt_gui
     hier_block_src_path: '.:'
-    id: am_rx_test
+    id: am_rx2
     max_nouts: '0'
     output_language: python
     placement: (0,0)
@@ -22,8 +23,8 @@ options:
     run_options: prompt
     sizing_mode: fixed
     thread_safe_setters: ''
-    title: Not titled yet
-    window_size: (1000,1000)
+    title: AM receiver (proven demod)
+    window_size: (1200,900)
   states:
     bus_sink: false
     bus_source: false
@@ -33,6 +34,30 @@ options:
     state: enabled
 
 blocks:
+- name: af_gain
+  id: variable
+  parameters:
+    comment: ''
+    value: '2'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [450, 12]
+    rotation: 0
+    state: enabled
+- name: if_freq
+  id: variable
+  parameters:
+    comment: ''
+    value: '12000'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [320, 12]
+    rotation: 0
+    state: enabled
 - name: samp_rate
   id: variable
   parameters:
@@ -42,26 +67,7 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [200, 12]
-    rotation: 0
-    state: enabled
-- name: analog_am_demod_cf_0
-  id: analog_am_demod_cf
-  parameters:
-    affinity: ''
-    alias: ''
-    audio_decim: '1'
-    audio_pass: '6000'
-    audio_stop: '8000'
-    chan_rate: samp_rate
-    comment: ''
-    maxoutbuf: '0'
-    minoutbuf: '0'
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate: [832, 248.0]
+    coordinate: [190, 12]
     rotation: 0
     state: enabled
 - name: analog_sig_source_x_0
@@ -70,8 +76,8 @@ blocks:
     affinity: ''
     alias: ''
     amp: '1'
-    comment: negative mixes down
-    freq: '-12000'
+    comment: mix down
+    freq: -if_freq
     maxoutbuf: '0'
     minoutbuf: '0'
     offset: '0'
@@ -84,30 +90,7 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [240, 384.0]
-    rotation: 0
-    state: enabled
-- name: analog_sig_source_x_0_0
-  id: analog_sig_source_x
-  parameters:
-    affinity: ''
-    alias: ''
-    amp: '1'
-    comment: negative mixes down
-    freq: '1000'
-    maxoutbuf: '0'
-    minoutbuf: '0'
-    offset: '0'
-    phase: '0'
-    samp_rate: samp_rate
-    showports: 'False'
-    type: float
-    waveform: analog.GR_SIN_WAVE
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate: [816, 104.0]
+    coordinate: [220, 372]
     rotation: 0
     state: enabled
 - name: audio_sink_0
@@ -115,7 +98,7 @@ blocks:
   parameters:
     affinity: ''
     alias: ''
-    comment: ''
+    comment: your speakers, NOT the radio card
     device_name: plughw:CARD=CODEC,DEV=0
     num_inputs: '1'
     ok_to_block: 'True'
@@ -124,24 +107,7 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [1272, 264.0]
-    rotation: 0
-    state: enabled
-- name: audio_sink_0_0
-  id: audio_sink
-  parameters:
-    affinity: ''
-    alias: ''
-    comment: ''
-    device_name: plughw:CARD=USB,DEV=0
-    num_inputs: '1'
-    ok_to_block: 'True'
-    samp_rate: samp_rate
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate: [1264, 48.0]
+    coordinate: [1240, 244]
     rotation: 0
     state: enabled
 - name: audio_source_0
@@ -149,7 +115,7 @@ blocks:
   parameters:
     affinity: ''
     alias: ''
-    comment: ''
+    comment: radio IF in
     device_name: plughw:CARD=CODEC,DEV=0
     maxoutbuf: '0'
     minoutbuf: '0'
@@ -160,63 +126,32 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [0, 224.0]
+    coordinate: [40, 236]
     rotation: 0
     state: enabled
-- name: band_pass_filter_0_0
-  id: band_pass_filter
+- name: blocks_complex_to_mag_0
+  id: blocks_complex_to_mag
   parameters:
     affinity: ''
     alias: ''
-    beta: '6.76'
-    comment: 'complex band pass: positive keeps USB, negative keeps LSB'
-    decim: '1'
-    gain: '1'
-    high_cutoff_freq: '2500'
-    interp: '1'
-    low_cutoff_freq: '300'
+    comment: envelope -- the piece that works
     maxoutbuf: '0'
     minoutbuf: '0'
-    samp_rate: samp_rate
-    type: fir_filter_fff
-    width: '200'
-    win: window.WIN_HAMMING
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate: [1000, 4.0]
-    rotation: 0
-    state: enabled
-- name: blocks_file_source_0
-  id: blocks_file_source
-  parameters:
-    affinity: ''
-    alias: ''
-    begin_tag: pmt.PMT_NIL
-    comment: ''
-    file: /home/oystein/test_la7lka.wav
-    length: '0'
-    maxoutbuf: '0'
-    minoutbuf: '0'
-    offset: '0'
-    repeat: 'True'
-    type: float
     vlen: '1'
   states:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [648, 24.0]
+    coordinate: [760, 244]
     rotation: 0
-    state: disabled
+    state: enabled
 - name: blocks_multiply_const_vxx_0
   id: blocks_multiply_const_vxx
   parameters:
     affinity: ''
     alias: ''
     comment: ''
-    const: '1'
+    const: af_gain
     maxoutbuf: '0'
     minoutbuf: '0'
     type: float
@@ -225,7 +160,7 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [1040, 272.0]
+    coordinate: [1070, 244]
     rotation: 0
     state: enabled
 - name: blocks_multiply_xx_0
@@ -243,7 +178,25 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [456, 248.0]
+    coordinate: [420, 240]
+    rotation: 0
+    state: enabled
+- name: dc_blocker_xx_0
+  id: dc_blocker_xx
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: remove carrier pedestal
+    length: '256'
+    long_form: 'True'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    type: ff
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [900, 228]
     rotation: 0
     state: enabled
 - name: hilbert_fc_0
@@ -252,7 +205,7 @@ blocks:
     affinity: ''
     alias: ''
     beta: '6.76'
-    comment: real IF to analytic
+    comment: real -> analytic
     maxoutbuf: '0'
     minoutbuf: '0'
     num_taps: '129'
@@ -261,7 +214,7 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [240, 232.0]
+    coordinate: [220, 220]
     rotation: 0
     state: enabled
 - name: low_pass_filter_0
@@ -270,8 +223,8 @@ blocks:
     affinity: ''
     alias: ''
     beta: '6.76'
-    comment: ''
-    cutoff_freq: '6000'
+    comment: AM channel, symmetric about DC
+    cutoff_freq: '5000'
     decim: '1'
     gain: '1'
     interp: '1'
@@ -279,13 +232,13 @@ blocks:
     minoutbuf: '0'
     samp_rate: samp_rate
     type: fir_filter_ccf
-    width: '2000'
+    width: '1000'
     win: window.WIN_HAMMING
   states:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [624, 224.0]
+    coordinate: [560, 196]
     rotation: 0
     state: enabled
 - name: qtgui_freq_sink_x_0
@@ -304,7 +257,7 @@ blocks:
     alpha8: '1.0'
     alpha9: '1.0'
     autoscale: 'False'
-    average: '0.1'
+    average: '0.2'
     axislabels: 'True'
     bw: samp_rate
     color1: '"blue"'
@@ -317,11 +270,11 @@ blocks:
     color7: '"yellow"'
     color8: '"dark red"'
     color9: '"dark green"'
-    comment: both sidebands, for reading the suppression
+    comment: recovered audio -- the tone/voice should appear
     ctrlpanel: 'False'
     fc: '0'
-    fftsize: '4096'
-    freqhalf: 'False'
+    fftsize: '2048'
+    freqhalf: 'True'
     grid: 'True'
     gui_hint: ''
     label: Relative Gain
@@ -338,7 +291,7 @@ blocks:
     legend: 'False'
     maxoutbuf: '0'
     minoutbuf: '0'
-    name: baseband
+    name: recovered audio
     nconnections: '1'
     norm_window: 'False'
     showports: 'False'
@@ -346,7 +299,7 @@ blocks:
     tr_level: '0.0'
     tr_mode: qtgui.TRIG_MODE_FREE
     tr_tag: ''
-    type: complex
+    type: float
     units: dB
     update_time: '0.10'
     width1: '1'
@@ -360,90 +313,26 @@ blocks:
     width8: '1'
     width9: '1'
     wintype: window.WIN_BLACKMAN_hARRIS
-    ymax: '0'
-    ymin: '-120'
+    ymax: '10'
+    ymin: '-100'
   states:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [616, 424.0]
-    rotation: 0
-    state: enabled
-- name: qtgui_waterfall_sink_x_0
-  id: qtgui_waterfall_sink_x
-  parameters:
-    affinity: ''
-    alias: ''
-    alpha1: '1.0'
-    alpha10: '1.0'
-    alpha2: '1.0'
-    alpha3: '1.0'
-    alpha4: '1.0'
-    alpha5: '1.0'
-    alpha6: '1.0'
-    alpha7: '1.0'
-    alpha8: '1.0'
-    alpha9: '1.0'
-    axislabels: 'True'
-    bw: samp_rate
-    color1: '0'
-    color10: '0'
-    color2: '0'
-    color3: '0'
-    color4: '0'
-    color5: '0'
-    color6: '0'
-    color7: '0'
-    color8: '0'
-    color9: '0'
-    comment: ''
-    fc: '0'
-    fftsize: '1024'
-    freqhalf: 'True'
-    grid: 'False'
-    gui_hint: ''
-    int_max: '10'
-    int_min: '-140'
-    label1: ''
-    label10: ''
-    label2: ''
-    label3: ''
-    label4: ''
-    label5: ''
-    label6: ''
-    label7: ''
-    label8: ''
-    label9: ''
-    legend: 'True'
-    maxoutbuf: '0'
-    minoutbuf: '0'
-    name: '""'
-    nconnections: '1'
-    showports: 'False'
-    type: float
-    update_time: '0.10'
-    wintype: window.WIN_BLACKMAN_hARRIS
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate: [1216, 352.0]
+    coordinate: [900, 420]
     rotation: 0
     state: enabled
 
 connections:
-- [analog_am_demod_cf_0, '0', blocks_multiply_const_vxx_0, '0']
 - [analog_sig_source_x_0, '0', blocks_multiply_xx_0, '1']
-- [analog_sig_source_x_0_0, '0', band_pass_filter_0_0, '0']
 - [audio_source_0, '0', hilbert_fc_0, '0']
-- [band_pass_filter_0_0, '0', audio_sink_0_0, '0']
-- [blocks_file_source_0, '0', band_pass_filter_0_0, '0']
+- [blocks_complex_to_mag_0, '0', dc_blocker_xx_0, '0']
 - [blocks_multiply_const_vxx_0, '0', audio_sink_0, '0']
-- [blocks_multiply_const_vxx_0, '0', qtgui_waterfall_sink_x_0, '0']
 - [blocks_multiply_xx_0, '0', low_pass_filter_0, '0']
-- [blocks_multiply_xx_0, '0', qtgui_freq_sink_x_0, '0']
+- [dc_blocker_xx_0, '0', blocks_multiply_const_vxx_0, '0']
+- [dc_blocker_xx_0, '0', qtgui_freq_sink_x_0, '0']
 - [hilbert_fc_0, '0', blocks_multiply_xx_0, '0']
-- [low_pass_filter_0, '0', analog_am_demod_cf_0, '0']
+- [low_pass_filter_0, '0', blocks_complex_to_mag_0, '0']
 
 metadata:
   file_format: 1
