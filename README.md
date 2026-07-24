@@ -22,17 +22,76 @@ Resource use with both FreeDV modes compiled in: **99 KB flash of 1024 KB**,
 
 ## Architecture
 
-### Analog front end
+### The 12 kHz IF is the interface
 
-Triple conversion, ending at a 12 kHz third IF so the MCU can sample it
-directly:
+The firmware ingests **one real ADC channel carrying a 12 kHz IF**, and does
+not care how that IF was produced. Everything above it — mixing, filtering,
+demodulation, FreeDV — is the same regardless of the front end.
+
+That makes two builds possible from one codebase:
+
+| | Mk1 | Mk2 |
+| --- | --- | --- |
+| Front end | Minimal, or none at all | Triple conversion |
+| Signal source | GNU Radio, a cheap SDR, or a sound card | Antenna |
+| Strong-signal performance | Modest | Roofing filter, good dynamic range |
+| Hardware needed | Breadboard | PCB, shielding, alignment |
+| Firmware | **Identical** | **Identical** |
+
+Mk1 exists so the project can be reproduced and developed without a board, and
+it is also the sensible build order: get the DSP and FreeDV chain solid against
+a known-clean signal first, then take on the analog design knowing the firmware
+side is already verified.
+
+12 kHz is also exactly Fs/4 at 48 kHz sampling, which is convenient — the
+complex mixer collapses to sign flips and I/Q swaps if it ever needs optimising.
+
+### Mk1 — minimal front end
+
+Any source that delivers a 12 kHz IF works. The GNU Radio flowgraphs in
+[GNURadio/](GNURadio/README.md) generate one directly, so the entry cost is a
+sound card output and a bias network to shift its swing into the ADC's 0–3.3 V
+range centred on 1.65 V. No PCB, no alignment, no mixers.
+
+### Mk2 — triple conversion
 
 ```
 RF --> 45 MHz --> 455 kHz --> 12 kHz --> ADC (48 kHz)
 ```
 
-12 kHz is exactly Fs/4 at 48 kHz sampling, which is convenient: the complex
-mixer collapses to sign flips and I/Q swaps if it ever needs optimising.
+Up-converting to 45 MHz first puts the image at **f + 90 MHz** for every HF
+band, so a single fixed 30 MHz low-pass on the input kills all images with no
+tracking preselector at all. Single conversion to 455 kHz would put the image
+910 kHz away on 20 m, which is why general-coverage receivers went to
+up-conversion in the first place.
+
+Note the input low-pass needs real attenuation at 92–118 MHz, not just a corner
+at 30 MHz — that is where the images land, and FM broadcast lives there.
+
+Three LOs are needed, but **only the first one tunes**:
+
+| LO | Frequency | Role |
+| --- | --- | --- |
+| LO1 | 46–75 MHz, variable | RF to 45 MHz |
+| LO2 | 45.455 MHz, fixed | 45 MHz to 455 kHz |
+| LO3 | 443 kHz, fixed | 455 kHz to 12 kHz |
+
+A Si5351A covers all three from one I2C part, which is what makes this
+affordable. Its square-wave output is not a problem for receive: the third
+harmonic of LO1 lands at 138–225 MHz, and the 30 MHz input filter has already
+removed anything that could mix down from there.
+
+The real constraint is **LO1 phase noise**. It sits at the first mixer, seeing
+the whole HF spectrum at once, so its noise sidebands reciprocal-mix strong
+nearby signals straight into the IF. That, rather than the roofing filter, will
+set close-in dynamic range on a crowded band — and it is the one place where
+cheap parts undo the reason for choosing this architecture. A Si5351 is fine to
+get running; a cleaner synthesiser for LO1 is worth it if Mk2 is meant to earn
+its complexity.
+
+LO control belongs behind a thin hardware abstraction so the core stays shared:
+Mk1 implements "set frequency" as a no-op or a single output, Mk2 drives the
+three-LO plan, and the DSP never knows the difference.
 
 ### DSP
 
@@ -180,6 +239,9 @@ Ready-to-run GNU Radio 3.10 flowgraphs for both are in
 
 ## Roadmap
 
+- Mk1 minimal front end, so the radio can be built without a PCB
+- Programmable LO (Si5351 on I2C1) plus band/VFO logic, behind a hardware
+  abstraction so Mk1 and Mk2 keep sharing one core
 - AM (nearly free — complex baseband is already there, AM is `arm_cmplx_mag_f32`)
 - CW with iambic keyer
 - FreeDV 700D for poor HF conditions (needs `codec2_math_arm.c` wired in; CPU is
