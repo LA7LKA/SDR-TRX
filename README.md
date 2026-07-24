@@ -21,6 +21,7 @@ Working and tested against live signals:
 | **AM** | **RX working** | Envelope detection, own path with no Hilbert |
 | **CW** | **RX working** | SSB into a 250 Hz filter at 700 Hz, 5.3 ms blocks |
 | **CW transmit** | **working** | Shaped keying, beacon on DAC1 |
+| **SSB transmit** | **working** | Phasing method, 301-tap Hilbert for ~56 dB suppression |
 
 Resource use with all four FreeDV modes compiled in: **227 KB flash of
 1024 KB**, **231 KB RAM of 320 KB**, leaving about 14 KB of heap headroom.
@@ -290,6 +291,7 @@ rather than a second thing to debug at the same time as transmit.
 > mode 8        select by number
 > tx            key the CW beacon
 > rx            back to receive
+> mic 15        microphone gain
 > wpm 25        CW speed
 > stat          current state
 ```

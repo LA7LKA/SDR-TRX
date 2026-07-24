@@ -576,7 +576,7 @@ static float audio_lpf_coeffs[AUDIO_TAPS] = {
     -0.0022, -0.0019, -0.0016, -0.0013, -0.0010, -0.0007
 };
 
-static float audio_state[AUDIO_TAPS + BLOCK_SIZE_MAX/2];
+static float audio_state[AUDIO_TAPS + BLOCK_SIZE_ANALOG/2];
 arm_fir_instance_f32 audio_lpf;
 
 
@@ -890,8 +890,10 @@ void nbfm_process_block(const uint16_t *in, uint32_t *out, int n)
 
 void nbfm_tx_process_block(const uint16_t *in, uint32_t *out, int n)
 {
-    static float audio_in[BLOCK_SIZE_MAX];
-    static float audio_filtered[BLOCK_SIZE_MAX];
+    /* Shared with the receive path: transmit and receive never run together. */
+    float *audio_in       = &dsp_scratch[0 * SCRATCH_N];
+    float *audio_filtered = &dsp_scratch[1 * SCRATCH_N];
+
     static float phase = 0.0f;
 
     const float kf = 2.0f * M_PI * 5000.0f / 48000.0f;   // FM deviation
@@ -923,6 +925,7 @@ void nbfm_tx_process_block(const uint16_t *in, uint32_t *out, int n)
 
 
 void nbfm_init(float if_freq_hz, float fs_hz);
+static void ssb_tx_init(void);
 
 /*
  * Filters are (re)initialised here rather than inline in main() so a mode
@@ -939,6 +942,8 @@ static void dsp_filters_init(void)
 
     // NCO for the FM path, plus pre_fm_I/Q and the post-demod audio LPF.
     nbfm_init(12000.0f, 48000.0f);
+
+    ssb_tx_init();
 
     arm_biquad_cascade_df1_init_f32(&cw_bpf, CW_STAGES,
                                     (float *)cw_coeffs, cw_state);
@@ -1274,6 +1279,155 @@ void am_process_block(const uint16_t *in, uint32_t *out, int n)
 
 
 /* ------------------------------------------------------------------------
+ * SSB transmit, phasing method
+ *
+ * Audio is band limited, split into a quadrature pair, and mixed up to the IF:
+ *
+ *   USB:  I*cos(wt) - Q*sin(wt)
+ *   LSB:  I*cos(wt) + Q*sin(wt)
+ *
+ * where Q is the Hilbert transform of the audio and I is the audio delayed by
+ * the transformer's group delay, so the two stay aligned.
+ *
+ * The Hilbert is 301 taps, which looks excessive until you notice that 300 Hz
+ * is 0.6 % of Nyquist at 48 kHz, and a Hilbert transformer is at its worst
+ * near DC. Fewer taps cost real opposite-sideband suppression: 129 taps manage
+ * only about 18 dB, 201 give 30 dB, 301 give 56 dB. Transmitting the unwanted
+ * sideband is other people's problem as much as ours, so it is worth the
+ * arithmetic -- and transmit does not run at the same time as receive, so the
+ * whole CPU budget is free anyway.
+ * --------------------------------------------------------------------- */
+
+#define SSB_HIL_TAPS  301
+#define SSB_HIL_DELAY ((SSB_HIL_TAPS - 1) / 2)
+
+static float ssb_hil_coeffs[SSB_HIL_TAPS];
+static float ssb_hil_state[SSB_HIL_TAPS + BLOCK_SIZE_ANALOG / 2];
+static arm_fir_instance_f32 ssb_hil;
+
+/* Speech band limiting: high pass at 300 Hz, low pass at 2700 Hz. */
+static const float ssb_audio_coeffs[10] = {
+    +9.7260993065e-01f,
+    -1.9452198613e+00f,
+    +9.7260993065e-01f,
+    +1.9444697251e+00f,
+    -9.4596999747e-01f,
+    +2.4827170061e-02f,
+    +4.9654340121e-02f,
+    +2.4827170061e-02f,
+    +1.5074026397e+00f,
+    -6.0671131993e-01f
+};
+static float ssb_audio_state[8];
+static arm_biquad_casd_df1_inst_f32 ssb_audio;
+
+/* Delay line for the I branch, matching the Hilbert group delay. */
+static float ssb_delay[SSB_HIL_DELAY];
+static int   ssb_delay_pos;
+
+/*
+ * Microphone gain. A dynamic mic into a 3.3 V ADC input needs a lot of it, and
+ * without any the modulator is fed a signal that barely leaves the noise
+ * floor. Adjustable from the console so the level can be set while watching
+ * adc_x1000 and the scope.
+ */
+static float mic_gain = 1.0f;
+
+static float ssb_osc_re = 1.0f, ssb_osc_im = 0.0f;
+static float ssb_step_re, ssb_step_im;
+
+static void ssb_tx_init(void)
+{
+    const int M = SSB_HIL_DELAY;
+
+    for (int i = 0; i < SSB_HIL_TAPS; i++)
+    {
+        int n = i - M;
+
+        if (n == 0 || (n % 2) == 0)
+        {
+            ssb_hil_coeffs[i] = 0.0f;   /* a Hilbert has no even-index taps */
+            continue;
+        }
+
+        float w = 0.54f - 0.46f * cosf(2.0f * (float)M_PI * (float)i
+                                       / (float)(SSB_HIL_TAPS - 1));
+
+        ssb_hil_coeffs[i] = 2.0f / ((float)M_PI * (float)n) * w;
+    }
+
+    arm_fir_init_f32(&ssb_hil, SSB_HIL_TAPS, ssb_hil_coeffs,
+                     ssb_hil_state, BLOCK_SIZE_ANALOG / 2);
+    arm_biquad_cascade_df1_init_f32(&ssb_audio, 2,
+                                    (float *)ssb_audio_coeffs, ssb_audio_state);
+}
+
+void ssb_tx_restart(void)
+{
+    float dphi = 2.0f * (float)M_PI * 12000.0f / 48000.0f;
+
+    ssb_step_re = cosf(dphi);
+    ssb_step_im = sinf(dphi);
+    ssb_osc_re  = 1.0f;
+    ssb_osc_im  = 0.0f;
+
+    for (int i = 0; i < SSB_HIL_DELAY; i++) ssb_delay[i] = 0.0f;
+    ssb_delay_pos = 0;
+}
+
+void ssb_tx_process_block(const uint16_t *in, uint32_t *out, int n)
+{
+    float *audio = &dsp_scratch[0 * SCRATCH_N];
+    float *q     = &dsp_scratch[1 * SCRATCH_N];
+
+    float peak = 0.0f;
+
+    for (int i = 0; i < n; i++)
+    {
+        float x = ((float)(in[i] & 0x0FFF) - 2048.0f) / 2048.0f;
+
+        float a = fabsf(x);
+        if (a > peak) peak = a;
+
+        audio[i] = x * mic_gain;
+    }
+
+    rx_adc_peak = peak;                 /* raw mic level, before the gain */
+
+    arm_biquad_cascade_df1_f32(&ssb_audio, audio, audio, n);
+    arm_fir_f32(&ssb_hil, audio, q, n);
+
+    const int lsb = (MODE == MODE_LSB);
+
+    for (int i = 0; i < n; i++)
+    {
+        /* I is the audio delayed to line up with the Hilbert output. */
+        float d = ssb_delay[ssb_delay_pos];
+
+        ssb_delay[ssb_delay_pos] = audio[i];
+        if (++ssb_delay_pos >= SSB_HIL_DELAY) ssb_delay_pos = 0;
+
+        float s = lsb ? (d * ssb_osc_re + q[i] * ssb_osc_im)
+                      : (d * ssb_osc_re - q[i] * ssb_osc_im);
+
+        float nre = ssb_osc_re * ssb_step_re - ssb_osc_im * ssb_step_im;
+        float nim = ssb_osc_re * ssb_step_im + ssb_osc_im * ssb_step_re;
+        float g   = 1.5f - 0.5f * (nre * nre + nim * nim);
+
+        ssb_osc_re = nre * g;
+        ssb_osc_im = nim * g;
+
+        float y = s * 1800.0f + 2048.0f;
+
+        if (y < 0.0f)    y = 0.0f;
+        if (y > 4095.0f) y = 4095.0f;
+
+        out[i] = (uint32_t)y;
+    }
+}
+
+
+/* ------------------------------------------------------------------------
  * CW transmit
  *
  * Sends a beacon at the IF the receiver is tuned to. The carrier sits at
@@ -1416,6 +1570,27 @@ void cw_tx_process_block(uint32_t *out, int n)
 }
 
 
+/*
+ * Transmit dispatch. CW keys its own carrier and takes no input; the voice
+ * modes modulate whatever is on the microphone ADC.
+ */
+static void tx_process_block(const uint16_t *in, uint32_t *out, int n)
+{
+    if (MODE == MODE_CW)                            cw_tx_process_block(out, n);
+    else if (MODE == MODE_USB || MODE == MODE_LSB)  ssb_tx_process_block(in, out, n);
+    else if (MODE == MODE_NBFM)                     nbfm_tx_process_block(in, out, n);
+    else
+    {
+        for (int i = 0; i < n; i++) out[i] = 2048;  /* nothing to send yet */
+    }
+}
+
+static int tx_supported(int mode)
+{
+    return mode == MODE_CW || mode == MODE_USB || mode == MODE_LSB
+        || mode == MODE_NBFM;
+}
+
 /* ------------------------------------------------------------------------
  * UART console
  *
@@ -1451,6 +1626,7 @@ static void console_help(void)
               "  mode <n>      select mode by number\r\n"
               "  tx            key the CW beacon\r\n"
               "  rx            back to receive\r\n"
+              "  mic <n>       microphone gain, 1..200\r\n"
               "  wpm <n>       CW speed\r\n"
               "  stat          current state\r\n");
 }
@@ -1493,16 +1669,38 @@ static void console_exec(char *line)
     }
     else if (str_eq(line, "tx"))
     {
-        tx_active = 1;
-        cw_tx_restart();
-        HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_SET);
-        uart_puts("tx: CW beacon\r\n");
+        if (!tx_supported(MODE))
+        {
+            uart_puts("no modulator for this mode yet\r\n");
+        }
+        else
+        {
+            if (MODE == MODE_CW) cw_tx_restart();
+            else                 ssb_tx_restart();
+
+            tx_active = 1;
+            HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_SET);
+            uart_puts("tx: ");
+            uart_puts(mode_name(MODE));
+            uart_puts("\r\n");
+        }
     }
     else if (str_eq(line, "rx"))
     {
         tx_active = 0;
         HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_RESET);
         uart_puts("rx\r\n");
+    }
+    else if (str_eq(line, "mic"))
+    {
+        int n;
+        if (str_num(arg, &n) && n >= 1 && n <= 200)
+        {
+            mic_gain = (float)n;
+            uart_kv("mic gain", n);
+            uart_puts("\r\n");
+        }
+        else uart_puts("mic 1..200\r\n");
     }
     else if (str_eq(line, "wpm"))
     {
@@ -1516,6 +1714,7 @@ static void console_exec(char *line)
         uart_puts(mode_name(MODE));
         uart_kv("  tx", tx_active);
         uart_kv("wpm", cw_get_wpm());
+        uart_kv("mic", (int)mic_gain);
         uart_kv("block", (int)block_size / 2);
         uart_puts("\r\n");
     }
@@ -1604,7 +1803,7 @@ arm_fir_init_f32(&pre_fm_Q,
                      AUDIO_TAPS,
                      audio_lpf_coeffs,
                      audio_state,
-                     BLOCK_SIZE_MAX/2);
+                     BLOCK_SIZE_ANALOG/2);
 }
 
 /* USER CODE END 0 */
@@ -1708,8 +1907,10 @@ int main(void)
     {
       uint32_t n = block_size / 2;
 
-      if (dac_block_processing == 1)      { cw_tx_process_block(&dac_buffer[0], n); dac_block_processing = 0; }
-      else if (dac_block_processing == 2) { cw_tx_process_block(&dac_buffer[n], n); dac_block_processing = 0; }
+      if (dac_block_processing == 1)
+      { tx_process_block(&adc_buffer[0], &dac_buffer[0], n); dac_block_processing = 0; }
+      else if (dac_block_processing == 2)
+      { tx_process_block(&adc_buffer[n], &dac_buffer[n], n); dac_block_processing = 0; }
     }
     else
     // RX path. Swap this with the nbfm_tx_process_block() block below to go
