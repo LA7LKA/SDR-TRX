@@ -12,7 +12,8 @@ Built 2026-07-24 for the **STM32F746** (Nucleo-F746ZG pinout, see `qrp-sdr-trx.i
 ## What is in this build
 
 - FreeDV 1600, 700D and 700E (HF, on SSB) and FreeDV 2400B (VHF/FM) receive
-- SSB, NBFM, AM and CW receive
+- SSB, NBFM, AM and CW receive, plus CW transmit
+- UART console: type 'help' at the prompt
 - Starts up in CW, 700 Hz pitch, 250 Hz filter
 - Telemetry on USART3 / ST-Link VCP, 115200 8N1
 

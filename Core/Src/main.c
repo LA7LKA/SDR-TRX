@@ -1272,6 +1272,287 @@ void am_process_block(const uint16_t *in, uint32_t *out, int n)
     }
 }
 
+
+/* ------------------------------------------------------------------------
+ * CW transmit
+ *
+ * Sends a beacon at the IF the receiver is tuned to. The carrier sits at
+ * CW_PITCH_HZ above the IF centre, which is the same offset the receive
+ * filter is centred on: a station whose carrier gives us a 700 Hz tone is on
+ * the frequency we have to answer on, so transmit has to land in the same
+ * place.
+ *
+ * The envelope is shaped rather than switched. Hard keying splatters well
+ * outside the occupied bandwidth -- key clicks are one of the more common
+ * complaints on the CW bands -- so each edge is a raised cosine a few
+ * milliseconds long.
+ * --------------------------------------------------------------------- */
+
+#define CW_MSG      "CQ CQ CQ DE LA7LKA"
+#define CW_UNITS    256                     /* dit units in the keyed message */
+#define CW_RAMP     240                     /* 5 ms edge at 48 kHz */
+
+static const char *cw_morse(char c)
+{
+    switch (c) {
+    case 'A': return ".-";    case 'B': return "-...";  case 'C': return "-.-.";
+    case 'D': return "-..";   case 'E': return ".";     case 'F': return "..-.";
+    case 'G': return "--.";   case 'H': return "....";  case 'I': return "..";
+    case 'J': return ".---";  case 'K': return "-.-";   case 'L': return ".-..";
+    case 'M': return "--";    case 'N': return "-.";    case 'O': return "---";
+    case 'P': return ".--.";  case 'Q': return "--.-";  case 'R': return ".-.";
+    case 'S': return "...";   case 'T': return "-";     case 'U': return "..-";
+    case 'V': return "...-";  case 'W': return ".--";   case 'X': return "-..-";
+    case 'Y': return "-.--";  case 'Z': return "--..";
+    case '0': return "-----"; case '1': return ".----"; case '2': return "..---";
+    case '3': return "...--"; case '4': return "....-"; case '5': return ".....";
+    case '6': return "-...."; case '7': return "--..."; case '8': return "---..";
+    case '9': return "----.";
+    default:  return "";
+    }
+}
+
+static uint8_t cw_key[CW_UNITS];    /* one entry per dit unit, 1 = key down */
+static int     cw_key_len;
+
+static int      cw_wpm = 20;
+static uint32_t cw_dit_samples = 48000 * 12 / (10 * 20);
+
+static int      cw_unit;            /* index into cw_key */
+static uint32_t cw_tick;            /* samples into the current unit */
+static float    cw_env;             /* shaped envelope, 0..1 */
+static int      cw_ramp;            /* position within an edge */
+
+static float    cw_osc_re = 1.0f, cw_osc_im = 0.0f;
+static float    cw_step_re, cw_step_im;
+
+static void cw_build_message(void)
+{
+    int n = 0;
+
+    for (const char *p = CW_MSG; *p; p++)
+    {
+        if (*p == ' ')
+        {
+            /* Word gap is 7 units; 3 were already emitted after the letter. */
+            for (int i = 0; i < 4 && n < CW_UNITS; i++) cw_key[n++] = 0;
+            continue;
+        }
+
+        for (const char *e = cw_morse(*p); *e; e++)
+        {
+            int len = (*e == '-') ? 3 : 1;
+
+            for (int i = 0; i < len && n < CW_UNITS; i++) cw_key[n++] = 1;
+            if (n < CW_UNITS) cw_key[n++] = 0;          /* inter-element gap */
+        }
+
+        for (int i = 0; i < 2 && n < CW_UNITS; i++) cw_key[n++] = 0;  /* -> 3 */
+    }
+
+    for (int i = 0; i < 7 && n < CW_UNITS; i++) cw_key[n++] = 0;      /* tail */
+
+    cw_key_len = n;
+}
+
+void cw_set_wpm(int wpm)
+{
+    cw_wpm = wpm;
+    cw_dit_samples = (uint32_t)(48000.0f * 1.2f / (float)wpm);
+}
+
+int cw_get_wpm(void) { return cw_wpm; }
+
+void cw_tx_restart(void)
+{
+    if (!cw_key_len) cw_build_message();
+
+    cw_unit = 0;
+    cw_tick = 0;
+    cw_env  = 0.0f;
+    cw_ramp = 0;
+
+    /* Carrier at the IF centre plus the tone pitch, same as receive expects. */
+    float dphi = 2.0f * (float)M_PI * (12000.0f + CW_PITCH_HZ) / 48000.0f;
+
+    cw_step_re = cosf(dphi);
+    cw_step_im = sinf(dphi);
+    cw_osc_re  = 1.0f;
+    cw_osc_im  = 0.0f;
+}
+
+void cw_tx_process_block(uint32_t *out, int n)
+{
+    for (int i = 0; i < n; i++)
+    {
+        int want = cw_key[cw_unit];
+
+        if (++cw_tick >= cw_dit_samples)
+        {
+            cw_tick = 0;
+            if (++cw_unit >= cw_key_len) cw_unit = 0;
+        }
+
+        /* Raised-cosine edge, so the spectrum stays where it belongs. */
+        if (want && cw_ramp < CW_RAMP) cw_ramp++;
+        else if (!want && cw_ramp > 0) cw_ramp--;
+
+        cw_env = 0.5f * (1.0f - cosf((float)M_PI * (float)cw_ramp / (float)CW_RAMP));
+
+        float y = cw_env * cw_osc_re * 1800.0f + 2048.0f;
+
+        float nre = cw_osc_re * cw_step_re - cw_osc_im * cw_step_im;
+        float nim = cw_osc_re * cw_step_im + cw_osc_im * cw_step_re;
+        float g   = 1.5f - 0.5f * (nre * nre + nim * nim);
+
+        cw_osc_re = nre * g;
+        cw_osc_im = nim * g;
+
+        if (y < 0.0f)    y = 0.0f;
+        if (y > 4095.0f) y = 4095.0f;
+
+        out[i] = (uint32_t)y;
+    }
+}
+
+
+/* ------------------------------------------------------------------------
+ * UART console
+ *
+ * Exists so mode changes, PTT and levels can be driven over the ST-Link VCP
+ * instead of by reflashing. A front panel comes later; putting the control
+ * layer in first means the OLED and switches become a second way to reach
+ * commands that already work, rather than a second thing to debug at the same
+ * time as transmit.
+ * --------------------------------------------------------------------- */
+
+volatile int tx_active = 0;      /* set by ptt/tx, cleared by rx */
+
+static char cons_line[64];
+static int  cons_len;
+
+static int str_eq(const char *a, const char *b)
+{
+    while (*a && *b && *a == *b) { a++; b++; }
+    return *a == 0 && *b == 0;
+}
+
+static int str_num(const char *s, int *out)
+{
+    int v = 0, any = 0;
+    while (*s >= '0' && *s <= '9') { v = v * 10 + (*s++ - '0'); any = 1; }
+    return any ? (*out = v, 1) : 0;
+}
+
+static void console_help(void)
+{
+    uart_puts("\r\ncommands:\r\n"
+              "  mode          list modes\r\n"
+              "  mode <n>      select mode by number\r\n"
+              "  tx            key the CW beacon\r\n"
+              "  rx            back to receive\r\n"
+              "  wpm <n>       CW speed\r\n"
+              "  stat          current state\r\n");
+}
+
+static void console_modes(void)
+{
+    uart_puts("\r\n");
+    for (int i = 0; i < MODE_COUNT; i++)
+    {
+        if (mode_cfg[i].name == NULL) continue;
+        uart_kv("", i);
+        uart_puts(mode_cfg[i].name);
+        uart_puts(i == MODE ? "   <= current\r\n" : "\r\n");
+    }
+}
+
+static void console_exec(char *line)
+{
+    char *arg = line;
+
+    while (*arg && *arg != ' ') arg++;
+    if (*arg == ' ') *arg++ = 0;
+
+    if (str_eq(line, "help") || str_eq(line, "?"))
+    {
+        console_help();
+    }
+    else if (str_eq(line, "mode"))
+    {
+        int n;
+        if (str_num(arg, &n) && n >= 0 && n < MODE_COUNT && mode_cfg[n].name)
+        {
+            tx_active = 0;
+            radio_set_mode(n);
+            uart_puts("mode: ");
+            uart_puts(mode_name(n));
+            uart_puts("\r\n");
+        }
+        else console_modes();
+    }
+    else if (str_eq(line, "tx"))
+    {
+        tx_active = 1;
+        cw_tx_restart();
+        HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_SET);
+        uart_puts("tx: CW beacon\r\n");
+    }
+    else if (str_eq(line, "rx"))
+    {
+        tx_active = 0;
+        HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_RESET);
+        uart_puts("rx\r\n");
+    }
+    else if (str_eq(line, "wpm"))
+    {
+        int n;
+        if (str_num(arg, &n) && n >= 5 && n <= 60) { cw_set_wpm(n); uart_kv("wpm", n); uart_puts("\r\n"); }
+        else uart_puts("wpm 5..60\r\n");
+    }
+    else if (str_eq(line, "stat"))
+    {
+        uart_puts("\r\nmode: ");
+        uart_puts(mode_name(MODE));
+        uart_kv("  tx", tx_active);
+        uart_kv("wpm", cw_get_wpm());
+        uart_kv("block", (int)block_size / 2);
+        uart_puts("\r\n");
+    }
+    else if (*line)
+    {
+        uart_puts("? try help\r\n");
+    }
+}
+
+static void console_poll(void)
+{
+    if (!(huart3.Instance->ISR & USART_ISR_RXNE))
+        return;
+
+    char c = (char)(huart3.Instance->RDR & 0xFF);
+
+    if (c == '\r' || c == '\n')
+    {
+        uart_puts("\r\n");
+        cons_line[cons_len] = 0;
+        console_exec(cons_line);
+        cons_len = 0;
+        uart_puts("> ");
+    }
+    else if ((c == 8 || c == 127) && cons_len)
+    {
+        cons_len--;
+        uart_puts("\b \b");
+    }
+    else if (c >= ' ' && cons_len < (int)sizeof(cons_line) - 1)
+    {
+        cons_line[cons_len++] = c;
+        char e[2] = { c, 0 };
+        uart_puts(e);
+    }
+}
+
 void process_block(const uint16_t *in, uint32_t *out, int n)
 {
     uint32_t t0 = DWT->CYCCNT;
@@ -1410,7 +1691,7 @@ int main(void)
   }
 
   uart_kv("heap_left", (int)heap_largest_free());
-  uart_puts("\r\n");
+  uart_puts("\r\ntype 'help' for commands\r\n> ");
 
 
   /* USER CODE END 2 */
@@ -1421,7 +1702,16 @@ int main(void)
   {
 
     uart_pump();
+    console_poll();
 
+    if (tx_active)
+    {
+      uint32_t n = block_size / 2;
+
+      if (dac_block_processing == 1)      { cw_tx_process_block(&dac_buffer[0], n); dac_block_processing = 0; }
+      else if (dac_block_processing == 2) { cw_tx_process_block(&dac_buffer[n], n); dac_block_processing = 0; }
+    }
+    else
     // RX path. Swap this with the nbfm_tx_process_block() block below to go
     // back to transmit testing.
     if (mode_is_buffered(MODE))

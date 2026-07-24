@@ -20,6 +20,7 @@ Working and tested against live signals:
 | **FreeDV 700E** | **RX working** | As 700D with a shorter frame, so it reacquires faster |
 | **AM** | **RX working** | Envelope detection, own path with no Hilbert |
 | **CW** | **RX working** | SSB into a 250 Hz filter at 700 Hz, 5.3 ms blocks |
+| **CW transmit** | **working** | Shaped keying, beacon on DAC1 |
 
 Resource use with all four FreeDV modes compiled in: **227 KB flash of
 1024 KB**, **231 KB RAM of 320 KB**, leaving about 14 KB of heap headroom.
@@ -276,6 +277,22 @@ With squelch off, codec2 passes the modem input through while unsynced by taking
 every Nth sample with no anti-alias filter, which at 48 kHz in and 8 kHz out
 folds everything above 4 kHz into the speech band and sounds like badly
 resampled audio.
+
+## Console
+
+Commands over the same ST-Link VCP as the telemetry, so modes and transmit can
+be driven without reflashing. Deliberately built before the front panel: an
+OLED and switches then become a second way to reach commands that already work,
+rather than a second thing to debug at the same time as transmit.
+
+```
+> mode          list modes
+> mode 8        select by number
+> tx            key the CW beacon
+> rx            back to receive
+> wpm 25        CW speed
+> stat          current state
+```
 
 ## Telemetry
 
