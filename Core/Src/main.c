@@ -524,7 +524,7 @@ arm_fir_instance_f32 audio_lpf;
 #define MODE_FREEDV_700D  5  // FreeDV 700D, OFDM + LDPC on SSB for weak signals
 #define MODE_FREEDV_700E  6  // FreeDV 700E, shorter frame than 700D, faster reacquire
 
-int MODE = MODE_FREEDV_700D;  // default mode
+int MODE = MODE_FREEDV_700E;  // default mode
 
 /*
  * Fill an interleaved cos/sin buffer for the IF mixer.
