@@ -18,6 +18,8 @@ Working and tested against live signals:
 | **FreeDV 2400B** | **RX working** | VHF/10 m, carried on FM. ~57 % CPU |
 | **FreeDV 700D** | **RX working** | HF, weak-signal OFDM + LDPC. ~28 % average CPU |
 | **FreeDV 700E** | **RX working** | As 700D with a shorter frame, so it reacquires faster |
+| **AM** | **RX working** | Envelope detection, own path with no Hilbert |
+| **CW** | **RX working** | SSB into a 250 Hz filter at 700 Hz, 5.3 ms blocks |
 
 Resource use with all four FreeDV modes compiled in: **227 KB flash of
 1024 KB**, **231 KB RAM of 320 KB**, leaving about 14 KB of heap headroom.
@@ -313,8 +315,12 @@ Ready-to-run GNU Radio 3.10 flowgraphs for both are in
 - Mk1 minimal front end, so the radio can be built without a PCB
 - Programmable LO (Si5351 on I2C1), switched band-pass filter bank and VFO
   logic, behind a hardware abstraction so Mk1 and Mk2 keep sharing one core
-- AM (nearly free — complex baseband is already there, AM is `arm_cmplx_mag_f32`)
-- CW with iambic keyer
+- CW pitch and bandwidth as front panel controls; the filter is a biquad
+  cascade rather than a FIR so retuning is five coefficients, not a redesign
+- CW offset and sidetone, which must track the pitch: a tone heard at 700 Hz
+  means the carrier is 700 Hz off the dial, and the sidetone has to match the
+  RX pitch or zero-beating lands you beside the other station
+- CW iambic keyer
 - FreeDV TX
 - Full filterbank (FIR/FFT), improved AGC and noise reduction
 - PA control and protection logic

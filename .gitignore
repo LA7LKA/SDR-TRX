@@ -3,3 +3,6 @@ build/
 
 # codec2 is a submodule; its own build tree is not ours to track
 codec2/build/
+
+# GRC generates these from the .grc sources
+GNURadio/*.py

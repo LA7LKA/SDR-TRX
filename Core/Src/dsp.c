@@ -72,6 +72,49 @@ float agc_process(float x, agc_t *st)
     return x * st->gain;
 }
 
+void agc_block(float *x, int n, agc_t *st)
+{
+    agc_block_cfg(x, n, st, 0.25f, 0.02f);
+}
+
+void agc_block_cfg(float *x, int n, agc_t *st, float attack, float decay)
+{
+    const float target     = 0.5f;   /* leaves headroom before the DAC clips */
+    const float gain_min   = 0.1f;
+    const float gain_max   = 50.0f;
+
+    float peak = 0.0f;
+
+    for (int i = 0; i < n; i++)
+    {
+        float a = fabsf(x[i]);
+        if (a > peak) peak = a;
+    }
+
+    float g0 = st->gain;
+
+    if (peak > 1e-6f)
+    {
+        float want = target / peak;
+
+        if (want < gain_min) want = gain_min;
+        if (want > gain_max) want = gain_max;
+
+        st->gain += (want - st->gain) * ((want < st->gain) ? attack : decay);
+    }
+
+    /*
+     * Ramp the gain across the block rather than switching it at the boundary.
+     * A gain step is an amplitude discontinuity, and an amplitude
+     * discontinuity is exactly what a click is -- at 5.3 ms blocks that would
+     * be up to 188 of them a second.
+     */
+    float dg = (st->gain - g0) / (float)n;
+
+    for (int i = 0; i < n; i++)
+        x[i] *= g0 + dg * (float)i;
+}
+
 // -------------------- FM Discriminator (data) --------------------
 void fm_discriminate(const float *I_in, const float *Q_in, float *out, int n)
 {

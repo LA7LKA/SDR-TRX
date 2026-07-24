@@ -325,7 +325,7 @@ blocks:
     interleave_frames: '1'
     maxoutbuf: '0'
     minoutbuf: '0'
-    mode: freedv_api.MODE_700D
+    mode: freedv_api.MODE_700E
     tx_bpf_val: 'True'
     txt_msg: '''GNU Radio'''
   states:

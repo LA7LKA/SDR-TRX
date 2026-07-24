@@ -130,6 +130,8 @@ int freedv_ok = 0;          // set once freedv_chain_init() has succeeded
 volatile uint32_t rx_blocks = 0;   // blocks through process_block()
 volatile float    rx_peak   = 0.0f; // peak |audio| at the modem input
 volatile float    rx_rms    = 0.0f; // rms of the same, to judge peak/rms
+volatile float    rx_env_min = 0.0f; // AM: smallest envelope value in the block
+volatile float    rx_env_avg = 0.0f; // AM: mean envelope, i.e. the carrier level
 volatile float    rx_adc_peak = 0.0f; // peak |ADC| before any filtering
 volatile uint32_t rx_cycles_max = 0;  // worst-case cycles for one block
 volatile uint32_t rx_fdv_cycles_max = 0; // worst-case cycles inside the FreeDV chain
@@ -278,6 +280,42 @@ static float pre_demod_coeffs[PRE_DEMOD_TAPS] = {
 #define SCRATCH_N (BLOCK_SIZE_MAX / 2)
 static float dsp_scratch[10 * SCRATCH_N];
 
+/*
+ * CW audio filter: three identical biquad band-pass sections at the tone pitch.
+ *
+ * Biquads rather than a FIR because pitch and bandwidth are meant to become
+ * front panel controls. Retuning this is five coefficients; a FIR with the
+ * same skirts would be hundreds of taps to redesign on every turn of a knob.
+ *
+ * Each section is deliberately wider than the target: cascading three narrows
+ * the result, so Q 1.42 per section gives about 250 Hz overall. Going much
+ * below that starts to ring and smears the elements at speed, which reads
+ * worse than a wider filter.
+ */
+#define CW_PITCH_HZ   700.0f
+#define CW_STAGES     3
+
+static const float cw_coeffs[5 * CW_STAGES] = {
+    +3.1213224677e-02f,
+    +0.0000000000e+00f,
+    -3.1213224677e-02f,
+    +1.9294452893e+00f,
+    -9.3757355065e-01f,
+    +3.1213224677e-02f,
+    +0.0000000000e+00f,
+    -3.1213224677e-02f,
+    +1.9294452893e+00f,
+    -9.3757355065e-01f,
+    +3.1213224677e-02f,
+    +0.0000000000e+00f,
+    -3.1213224677e-02f,
+    +1.9294452893e+00f,
+    -9.3757355065e-01f
+};
+
+arm_biquad_casd_df1_inst_f32 cw_bpf;
+static float cw_state[4 * CW_STAGES];
+
 arm_fir_instance_f32 pre_fm_I;
 arm_fir_instance_f32 pre_fm_Q;
 
@@ -305,10 +343,36 @@ static void MX_ADC1_Init(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
-// USART3 is wired to the ST-Link virtual COM port (/dev/ttyACM0), 115200 8N1.
+/*
+ * USART3 is wired to the ST-Link virtual COM port (/dev/ttyACM0), 115200 8N1.
+ *
+ * Queued rather than sent with HAL_UART_Transmit, which blocks: a 123 character
+ * telemetry line takes 10.7 ms at 115200, and the analog block period is
+ * 5.3 ms, so every report used to cost two blocks of audio. Here uart_puts()
+ * only appends and uart_pump() moves one byte per main loop pass, which is
+ * ample when the loop turns over hundreds of thousands of times a second.
+ */
+#define TX_RING 512   /* power of two */
+
+static char              tx_ring[TX_RING];
+static volatile uint16_t tx_wr, tx_rd;
+
+static void uart_pump(void)
+{
+    if (tx_rd != tx_wr && (huart3.Instance->ISR & USART_ISR_TXE))
+        huart3.Instance->TDR = tx_ring[tx_rd++ & (TX_RING - 1)];
+}
+
 void uart_puts(const char *s)
 {
-    HAL_UART_Transmit(&huart3, (uint8_t *)s, strlen(s), 100);
+    while (*s)
+    {
+        /* Only ever blocks if the queue backs up, which startup can do. */
+        while ((uint16_t)(tx_wr - tx_rd) >= TX_RING)
+            uart_pump();
+
+        tx_ring[tx_wr++ & (TX_RING - 1)] = *s++;
+    }
 }
 
 // Integer-only formatting on purpose: printf("%f") needs -u _printf_float,
@@ -523,8 +587,10 @@ arm_fir_instance_f32 audio_lpf;
 #define MODE_FREEDV_2400B 4  // FreeDV 2400B, through a normal FM audio path
 #define MODE_FREEDV_700D  5  // FreeDV 700D, OFDM + LDPC on SSB for weak signals
 #define MODE_FREEDV_700E  6  // FreeDV 700E, shorter frame than 700D, faster reacquire
+#define MODE_AM           7  // AM, envelope detection off the complex baseband
+#define MODE_CW           8  // CW, SSB demod into a narrow filter at the tone pitch
 
-int MODE = MODE_FREEDV_700E;  // default mode
+int MODE = MODE_CW;  // default mode
 
 /*
  * Fill an interleaved cos/sin buffer for the IF mixer.
@@ -645,6 +711,35 @@ void ssb_process_block(const uint16_t *in, uint32_t *out, int n)
         // LSB = I - Q
         for (int i = 0; i < n; i++)
             audio_buf[i] = I_buf[i] - Q_buf[i];
+    }
+    else if (MODE == MODE_CW)
+    {
+        /*
+         * CW is just SSB into a narrow filter. Tuning is what places the
+         * carrier at the wanted pitch; the filter is centred there rather
+         * than at zero, which is why the pitch is a system setting and not
+         * simply a bandwidth.
+         */
+        static agc_t agc_cw = {1.0f};
+
+        for (int i = 0; i < n; i++)
+            audio_buf[i] = I_buf[i] + Q_buf[i];
+
+        arm_biquad_cascade_df1_f32(&cw_bpf, audio_buf, audio_buf, n);
+
+        float peak = 0.0f, sumsq = 0.0f;
+        for (int i = 0; i < n; i++)
+        {
+            float a = fabsf(audio_buf[i]);
+            if (a > peak) peak = a;
+            sumsq += audio_buf[i] * audio_buf[i];
+        }
+        rx_peak = peak;
+        rx_rms  = sqrtf(sumsq / (float)n);
+        rx_blocks++;
+
+        /* Slow decay so the gain does not wind up between elements. */
+        agc_block_cfg(audio_buf, n, &agc_cw, 0.25f, 0.002f);
     }
     else if (MODE == MODE_FREEDV || MODE == MODE_FREEDV_700D
                                  || MODE == MODE_FREEDV_700E)
@@ -845,6 +940,9 @@ static void dsp_filters_init(void)
     // NCO for the FM path, plus pre_fm_I/Q and the post-demod audio LPF.
     nbfm_init(12000.0f, 48000.0f);
 
+    arm_biquad_cascade_df1_init_f32(&cw_bpf, CW_STAGES,
+                                    (float *)cw_coeffs, cw_state);
+
     // Hilbert for SSB
     arm_fir_init_f32(&hilbert,
                      HILBERT_TAPS,
@@ -909,6 +1007,8 @@ static const mode_cfg_t mode_cfg[] = {
     [MODE_FREEDV_2400B] = { "FreeDV 2400B", BLOCK_SIZE_2400B,  1, FREEDV_CHAIN_MODE_2400B },
     [MODE_FREEDV_700D]  = { "FreeDV 700D",  BLOCK_SIZE_700D,   1, FREEDV_CHAIN_MODE_700D  },
     [MODE_FREEDV_700E]  = { "FreeDV 700E",  BLOCK_SIZE_700E,   1, FREEDV_CHAIN_MODE_700E  },
+    [MODE_AM]           = { "AM",    BLOCK_SIZE_ANALOG, 0, -1 },
+    [MODE_CW]           = { "CW",    BLOCK_SIZE_ANALOG, 0, -1 },
 };
 
 #define MODE_COUNT ((int)(sizeof(mode_cfg) / sizeof(mode_cfg[0])))
@@ -1082,6 +1182,96 @@ void freedv2400b_process_block(const uint16_t *in, uint32_t *out, int n)
     }
 }
 
+/*
+ * AM receive.
+ *
+ * Deliberately not routed through the SSB path. That one builds its complex
+ * signal with a Hilbert transformer, which AM does not need: mixing the real
+ * IF against cos and -sin gives I and Q directly, and the existing channel
+ * filter removes the sum-frequency image. Skipping the Hilbert removes both
+ * its quadrature error and its group delay, neither of which the envelope
+ * detector can tolerate -- any I/Q imbalance turns straight into amplitude
+ * error, and the whole point of AM is that the amplitude is the signal.
+ *
+ * The envelope is then |I + jQ|, which needs no knowledge of the carrier
+ * phase and, unlike SSB, is completely unaffected by a tuning offset.
+ */
+void am_process_block(const uint16_t *in, uint32_t *out, int n)
+{
+    float *I_buf     = &dsp_scratch[0 * SCRATCH_N];
+    float *Q_buf     = &dsp_scratch[1 * SCRATCH_N];
+    float *audio_buf = &dsp_scratch[2 * SCRATCH_N];
+    float *NCO_buf   = &dsp_scratch[3 * SCRATCH_N];   /* interleaved, 2n */
+
+    static dc_block_t dc_am  = {0};
+    static agc_t      agc_am = {1.0f};
+
+    float adc_peak = 0.0f;
+
+    nco_block_iq(NCO_buf, n);
+
+    for (int i = 0; i < n; i++)
+    {
+        float x = ((float)(in[i] & 0x0FFF) - 2048.0f) / 2048.0f;
+
+        float a = fabsf(x);
+        if (a > adc_peak) adc_peak = a;
+
+        /* Quadrature downconversion: multiply by exp(-j*w*t). */
+        I_buf[i] =  x * NCO_buf[2*i + 0];
+        Q_buf[i] = -x * NCO_buf[2*i + 1];
+    }
+
+    rx_adc_peak = adc_peak;
+
+    /* Removes the image at twice the IF that the mixing leaves behind. */
+    arm_fir_f32(&pre_fm_I, I_buf, I_buf, n);
+    arm_fir_f32(&pre_fm_Q, Q_buf, Q_buf, n);
+
+    float peak = 0.0f, sumsq = 0.0f;
+    float env_min = 1e9f, env_sum = 0.0f;
+
+    for (int i = 0; i < n; i++)
+    {
+        float env = sqrtf(I_buf[i] * I_buf[i] + Q_buf[i] * Q_buf[i]);
+
+        /*
+         * env_min against env_avg says whether the transmitter sent a carrier.
+         * Proper AM never lets the envelope reach zero, so env_min stays near
+         * (1 - m) of the mean. If env_min collapses to zero the envelope is
+         * being rectified, which is what a suppressed carrier looks like and
+         * why the tone comes out at twice its frequency.
+         */
+        if (env < env_min) env_min = env;
+        env_sum += env;
+
+        /* The carrier is a DC pedestal under the envelope; drop it. */
+        audio_buf[i] = dc_block(env, &dc_am);
+
+        float a = fabsf(audio_buf[i]);
+        if (a > peak) peak = a;
+        sumsq += audio_buf[i] * audio_buf[i];
+    }
+
+    rx_env_min = env_min;
+    rx_env_avg = env_sum / (float)n;
+    rx_peak = peak;
+    rx_rms  = sqrtf(sumsq / (float)n);
+    rx_blocks++;
+
+    agc_block(audio_buf, n, &agc_am);
+
+    for (int i = 0; i < n; i++)
+    {
+        float y = audio_buf[i] * 1500.0f + 2048.0f;
+
+        if (y < 0.0f)    y = 0.0f;
+        if (y > 4095.0f) y = 4095.0f;
+
+        out[i] = (uint32_t)y;
+    }
+}
+
 void process_block(const uint16_t *in, uint32_t *out, int n)
 {
     uint32_t t0 = DWT->CYCCNT;
@@ -1093,6 +1283,10 @@ void process_block(const uint16_t *in, uint32_t *out, int n)
     else if (MODE == MODE_FREEDV_2400B)
     {
         freedv2400b_process_block(in, out, n);  // FM-bane, ikke SSB
+    }
+    else if (MODE == MODE_AM)
+    {
+        am_process_block(in, out, n);           // egen bane, ingen Hilbert
     }
     else
     {
@@ -1226,6 +1420,8 @@ int main(void)
   while (1)
   {
 
+    uart_pump();
+
     // RX path. Swap this with the nbfm_tx_process_block() block below to go
     // back to transmit testing.
     if (mode_is_buffered(MODE))
@@ -1283,13 +1479,18 @@ int main(void)
         uart_kv("mode", MODE);
         uart_kv("blocks", (int)rx_blocks);
         uart_kv("ovr", (int)rx_overruns);
-        uart_kv("ring", (int)adc_avail());
+        uart_kv("ring", mode_is_buffered(MODE) ? (int)adc_avail() : 0);
         uart_kv("load_pct", (int)load_pct);
         uart_kv("us_max", (int)(rx_cycles_max / 216));
         uart_kv("us_fdv", (int)(rx_fdv_cycles_max / 216));
         uart_kv("adc_x1000", (int)(rx_adc_peak * 1000.0f));
         uart_kv("peak_x1000", (int)(rx_peak * 1000.0f));
         uart_kv("rms_x1000", (int)(rx_rms * 1000.0f));
+        if (MODE == MODE_AM)
+        {
+            uart_kv("env_min_x1000", (int)(rx_env_min * 1000.0f));
+            uart_kv("env_avg_x1000", (int)(rx_env_avg * 1000.0f));
+        }
         uart_kv("sync", freedv_chain_synced());
         uart_kv("snr_x10", (int)(freedv_chain_snr() * 10.0f));
         uart_puts("\r\n");

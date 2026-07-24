@@ -38,6 +38,25 @@ typedef struct {
 
 float agc_process(float x, agc_t *st);
 
+/*
+ * Block AGC, for anything with a clean waveform.
+ *
+ * agc_process() moves its gain on every sample against a fixed threshold, so
+ * on a tone the gain hunts several times per cycle and the varying gain across
+ * the waveform is itself distortion. This derives one gain from the block's
+ * peak and applies it uniformly, so the waveform is only scaled, never bent.
+ * Attack is quick to catch a rising signal before it clips; decay is slow so
+ * the background does not pump.
+ */
+void agc_block(float *x, int n, agc_t *st);
+
+/*
+ * As agc_block(), but with the time constants exposed. CW wants a much slower
+ * decay than voice: with a fast one the gain winds up in the gaps between
+ * elements and the keying itself starts to pump.
+ */
+void agc_block_cfg(float *x, int n, agc_t *st, float attack, float decay);
+
 // -------------------- FM Demod --------------------
 void nbfm_demod(float *I_in, float *Q_in, float *audio_out, int n);
 
