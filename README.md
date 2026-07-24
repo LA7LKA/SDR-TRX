@@ -103,8 +103,8 @@ Three LOs are needed, but **only the first one tunes**:
 
 A Si5351A covers all three from one I2C part, which is what makes this
 affordable. Its square-wave output is not a problem for receive: the third
-harmonic of LO1 lands at 138–225 MHz, and the 30 MHz input filter has already
-removed anything that could mix down from there.
+harmonic of LO1 lands at 138–225 MHz, and the band-pass filter ahead of the
+mixer has already removed anything that could mix down from there.
 
 The real constraint is **LO1 phase noise**. It sits at the first mixer, seeing
 the whole HF spectrum at once, so its noise sidebands reciprocal-mix strong
