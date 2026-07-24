@@ -125,10 +125,10 @@ PCD_HandleTypeDef hpcd_USB_OTG_FS;
  * output. The analog modes keep using the first block_size of it as a simple
  * double buffer.
  */
-#define DAC_RING_BLOCKS 3
+#define DAC_RING_BLOCKS 4
 #define DAC_RING_LEN    (DAC_RING_BLOCKS * (BLOCK_SIZE_MAX / 2))
 
-uint32_t dac_buffer[DAC_RING_LEN] = {0};
+uint16_t dac_buffer[DAC_RING_LEN] = {0};
 uint16_t adc_buffer[ADC_RING_LEN] = {0};
 
 volatile uint8_t block_ready = 0; // 0: no block ready, 1: first half ready, 2: second half ready
@@ -648,7 +648,7 @@ static void nco_block_iq(float *NCO_buf, int n)
     osc_im *= g;
 }
 
-void ssb_process_block(const uint16_t *in, uint32_t *out, int n)
+void ssb_process_block(const uint16_t *in, uint16_t *out, int n)
 {
     // Carved out of the shared scratch pool; see dsp_scratch above.
     float *I_buf     = &dsp_scratch[0 * SCRATCH_N];
@@ -810,11 +810,11 @@ void ssb_process_block(const uint16_t *in, uint32_t *out, int n)
         if (y < 0.0f)    y = 0.0f;
         if (y > 4095.0f) y = 4095.0f;
 
-        out[i] = (uint32_t)y;
+        out[i] = (uint16_t)y;
     }
 }
 
-void nbfm_process_block(const uint16_t *in, uint32_t *out, int n)
+void nbfm_process_block(const uint16_t *in, uint16_t *out, int n)
 {
     // Carved out of the shared scratch pool; see dsp_scratch above.
     float *I_if          = &dsp_scratch[0 * SCRATCH_N];
@@ -901,7 +901,7 @@ void nbfm_process_block(const uint16_t *in, uint32_t *out, int n)
         if (y < 0.0f)    y = 0.0f;
         if (y > 4095.0f) y = 4095.0f;
 
-        out[i] = (uint32_t)y;
+        out[i] = (uint16_t)y;
     }
 }
 
@@ -915,7 +915,7 @@ extern float mic_gain;   /* defined with the SSB modulator below */
  * demodulator expects and what stops the discriminator running into atan2's
  * wrap point at the far end.
  */
-static void fm_modulate(const float *audio, uint32_t *out, int n, float dev_hz)
+static void fm_modulate(const float *audio, uint16_t *out, int n, float dev_hz)
 {
     static float phase = 0.0f;
 
@@ -929,11 +929,11 @@ static void fm_modulate(const float *audio, uint32_t *out, int n, float dev_hz)
         if (phase >  (float)M_PI) phase -= TWO_PI;
         if (phase < -(float)M_PI) phase += TWO_PI;
 
-        out[i] = (uint32_t)((cosf(phase) * 2048.0f) + 2048.0f);
+        out[i] = (uint16_t)((cosf(phase) * 2048.0f) + 2048.0f);
     }
 }
 
-void nbfm_tx_process_block(const uint16_t *in, uint32_t *out, int n)
+void nbfm_tx_process_block(const uint16_t *in, uint16_t *out, int n)
 {
     /* Shared with the receive path: transmit and receive never run together. */
     float *audio_in       = &dsp_scratch[0 * SCRATCH_N];
@@ -1031,7 +1031,7 @@ static void audio_dma_start(void)
     uint32_t dac_len = (tx_active && mode_is_buffered(MODE)) ? DAC_RING_LEN
                                                              : block_size;
 
-    HAL_DAC_Start_DMA(&hdac, DAC_CHANNEL_1, dac_buffer, dac_len, DAC_ALIGN_12B_R);
+    HAL_DAC_Start_DMA(&hdac, DAC_CHANNEL_1, (uint32_t *)dac_buffer, dac_len, DAC_ALIGN_12B_R);
     HAL_ADC_Start_DMA(&hadc1, (uint32_t *)adc_buffer,
                       mode_is_buffered(MODE) ? ADC_RING_LEN : block_size);
 }
@@ -1155,7 +1155,7 @@ void radio_set_mode(int mode)
  * Deliberately no post-demod audio LPF: the voice filter would cut the 4800 Hz
  * tone and the modem would never sync.
  */
-void freedv2400b_process_block(const uint16_t *in, uint32_t *out, int n)
+void freedv2400b_process_block(const uint16_t *in, uint16_t *out, int n)
 {
     float *I_buf     = &dsp_scratch[0 * SCRATCH_N];
     float *Q_buf     = &dsp_scratch[1 * SCRATCH_N];
@@ -1242,7 +1242,7 @@ void freedv2400b_process_block(const uint16_t *in, uint32_t *out, int n)
         if (y < 0.0f)    y = 0.0f;
         if (y > 4095.0f) y = 4095.0f;
 
-        out[i] = (uint32_t)y;
+        out[i] = (uint16_t)y;
     }
 }
 
@@ -1260,7 +1260,7 @@ void freedv2400b_process_block(const uint16_t *in, uint32_t *out, int n)
  * The envelope is then |I + jQ|, which needs no knowledge of the carrier
  * phase and, unlike SSB, is completely unaffected by a tuning offset.
  */
-void am_process_block(const uint16_t *in, uint32_t *out, int n)
+void am_process_block(const uint16_t *in, uint16_t *out, int n)
 {
     float *I_buf     = &dsp_scratch[0 * SCRATCH_N];
     float *Q_buf     = &dsp_scratch[1 * SCRATCH_N];
@@ -1332,7 +1332,7 @@ void am_process_block(const uint16_t *in, uint32_t *out, int n)
         if (y < 0.0f)    y = 0.0f;
         if (y > 4095.0f) y = 4095.0f;
 
-        out[i] = (uint32_t)y;
+        out[i] = (uint16_t)y;
     }
 }
 
@@ -1465,7 +1465,7 @@ static void ssb_hilbert(const float *in, float *out, int n)
  * compression distorts it.
  */
 static void ssb_modulate(const float *audio, const float *q,
-                         uint32_t *out, int n, int lsb)
+                         uint16_t *out, int n, int lsb)
 {
     for (int i = 0; i < n; i++)
     {
@@ -1489,11 +1489,11 @@ static void ssb_modulate(const float *audio, const float *q,
         if (y < 0.0f)    y = 0.0f;
         if (y > 4095.0f) y = 4095.0f;
 
-        out[i] = (uint32_t)y;
+        out[i] = (uint16_t)y;
     }
 }
 
-void ssb_tx_process_block(const uint16_t *in, uint32_t *out, int n)
+void ssb_tx_process_block(const uint16_t *in, uint16_t *out, int n)
 {
     float *audio = &dsp_scratch[0 * SCRATCH_N];
     float *q     = &dsp_scratch[1 * SCRATCH_N];
@@ -1628,7 +1628,7 @@ void cw_tx_restart(void)
     cw_osc_im  = 0.0f;
 }
 
-void cw_tx_process_block(uint32_t *out, int n)
+void cw_tx_process_block(uint16_t *out, int n)
 {
     for (int i = 0; i < n; i++)
     {
@@ -1658,7 +1658,7 @@ void cw_tx_process_block(uint32_t *out, int n)
         if (y < 0.0f)    y = 0.0f;
         if (y > 4095.0f) y = 4095.0f;
 
-        out[i] = (uint32_t)y;
+        out[i] = (uint16_t)y;
     }
 }
 
@@ -1706,7 +1706,7 @@ void freedv_tx_feed(const uint16_t *in, int n)
  * Produce one block of modem IF into the DAC. Pulls interpolated modem samples
  * and runs them through the SSB or FM modulator. Cheap -- no encode here.
  */
-void freedv_tx_produce(uint32_t *out, int n)
+void freedv_tx_produce(uint16_t *out, int n)
 {
     float *audio = &dsp_scratch[0 * SCRATCH_N];
     float *q     = &dsp_scratch[1 * SCRATCH_N];
@@ -1742,7 +1742,7 @@ void freedv_tx_produce(uint32_t *out, int n)
  * Transmit dispatch. CW keys its own carrier and takes no input; the voice
  * modes modulate whatever is on the microphone ADC.
  */
-static void tx_process_block(const uint16_t *in, uint32_t *out, int n)
+static void tx_process_block(const uint16_t *in, uint16_t *out, int n)
 {
     if (MODE == MODE_CW)                            cw_tx_process_block(out, n);
     else if (MODE == MODE_USB || MODE == MODE_LSB)  ssb_tx_process_block(in, out, n);
@@ -1928,7 +1928,7 @@ static void console_poll(void)
     }
 }
 
-void process_block(const uint16_t *in, uint32_t *out, int n)
+void process_block(const uint16_t *in, uint16_t *out, int n)
 {
     uint32_t t0 = DWT->CYCCNT;
 

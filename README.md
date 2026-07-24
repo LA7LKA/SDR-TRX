@@ -14,16 +14,16 @@ Working and tested against live signals:
 | --- | --- | --- |
 | SSB (USB/LSB) | RX working | Phasing method, Hilbert + complex mixer |
 | NBFM | RX working | TX exists but is currently out of the main loop |
-| **FreeDV 1600** | **RX working** | HF, carried on SSB. ~79 % CPU |
-| **FreeDV 2400B** | **RX working** | VHF/10 m, carried on FM. ~57 % CPU |
-| **FreeDV 700D** | **RX working** | HF, weak-signal OFDM + LDPC. ~28 % average CPU |
-| **FreeDV 700E** | **RX working** | As 700D with a shorter frame, so it reacquires faster |
+| **FreeDV 1600** | **RX + TX working** | HF, carried on SSB |
+| **FreeDV 2400B** | **RX + TX working** | VHF/10 m, carried on FM |
+| **FreeDV 700D** | **RX + TX working** | HF, weak-signal OFDM + LDPC |
+| **FreeDV 700E** | **RX + TX working** | As 700D with a shorter frame, so it reacquires faster |
 | **AM** | **RX working** | Envelope detection, own path with no Hilbert |
 | **CW** | **RX working** | SSB into a 250 Hz filter at 700 Hz, 5.3 ms blocks |
 | **CW transmit** | **working** | Shaped keying, beacon on DAC1 |
 | **SSB transmit** | **working** | Phasing method; unwanted sideband below the bench noise floor |
 | **NBFM transmit** | **working** | Deviation set by mic gain, reported in telemetry |
-| **FreeDV transmit** | **working** | 1600, 2400B, 700D, 700E — vocoder + modem into the SSB or FM modulator |
+
 
 Resource use with all four FreeDV modes compiled in: **227 KB flash of
 1024 KB**, **231 KB RAM of 320 KB**, leaving about 14 KB of heap headroom.
