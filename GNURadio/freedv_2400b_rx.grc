@@ -6,12 +6,12 @@ options:
     cmake_opt: ''
     comment: ''
     copyright: ''
-    description: FreeDV receiver for checking the transceiver's FreeDV transmit path
+    description: FreeDV 2400B receiver -- FM path, for checking 2400B transmit
     gen_cmake: 'On'
     gen_linking: dynamic
     generate_options: qt_gui
     hier_block_src_path: '.:'
-    id: freedv_rx
+    id: freedv_2400b_rx
     max_nouts: '0'
     output_language: python
     placement: (0,0)
@@ -22,7 +22,7 @@ options:
     run_options: prompt
     sizing_mode: fixed
     thread_safe_setters: ''
-    title: FreeDV receiver
+    title: FreeDV 2400B receiver
     window_size: (1300,900)
   states:
     bus_sink: false
@@ -42,7 +42,7 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [450, 12]
+    coordinate: [590, 12]
     rotation: 0
     state: enabled
 - name: if_freq
@@ -57,6 +57,18 @@ blocks:
     coordinate: [320, 12]
     rotation: 0
     state: enabled
+- name: max_dev
+  id: variable
+  parameters:
+    comment: same 2.5 kHz the radio transmits
+    value: '2500'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [450, 12]
+    rotation: 0
+    state: enabled
 - name: samp_rate
   id: variable
   parameters:
@@ -67,6 +79,22 @@ blocks:
     bus_source: false
     bus_structure: null
     coordinate: [190, 12]
+    rotation: 0
+    state: enabled
+- name: analog_quadrature_demod_cf_0
+  id: analog_quadrature_demod_cf
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: FM discriminator -- the piece SSB rx lacks
+    gain: samp_rate/(2*3.141592653589793*max_dev)
+    maxoutbuf: '0'
+    minoutbuf: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [760, 244]
     rotation: 0
     state: enabled
 - name: analog_sig_source_x_0
@@ -89,38 +117,15 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [230, 372]
+    coordinate: [210, 372]
     rotation: 0
     state: enabled
-- name: analog_sig_source_x_0_0
-  id: analog_sig_source_x
-  parameters:
-    affinity: ''
-    alias: ''
-    amp: '1'
-    comment: negative mixes down
-    freq: '1000'
-    maxoutbuf: '0'
-    minoutbuf: '0'
-    offset: '0'
-    phase: '0'
-    samp_rate: samp_rate
-    showports: 'False'
-    type: float
-    waveform: analog.GR_SIN_WAVE
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate: [864, 96.0]
-    rotation: 0
-    state: disabled
 - name: audio_sink_0
   id: audio_sink
   parameters:
     affinity: ''
     alias: ''
-    comment: ''
+    comment: keep off the card feeding the radio mic
     device_name: plughw:CARD=CODEC,DEV=0
     num_inputs: '1'
     ok_to_block: 'True'
@@ -129,24 +134,7 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [1480, 472.0]
-    rotation: 0
-    state: enabled
-- name: audio_sink_0_0
-  id: audio_sink
-  parameters:
-    affinity: ''
-    alias: ''
-    comment: ''
-    device_name: plughw:CARD=USB,DEV=0
-    num_inputs: '1'
-    ok_to_block: 'True'
-    samp_rate: samp_rate
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate: [1320, 48.0]
+    coordinate: [1620, 340]
     rotation: 0
     state: enabled
 - name: audio_source_0
@@ -165,70 +153,7 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [8, 208.0]
-    rotation: 0
-    state: enabled
-- name: band_pass_filter_0_0
-  id: band_pass_filter
-  parameters:
-    affinity: ''
-    alias: ''
-    beta: '6.76'
-    comment: 'complex band pass: positive keeps USB, negative keeps LSB'
-    decim: '1'
-    gain: '1'
-    high_cutoff_freq: '2500'
-    interp: '1'
-    low_cutoff_freq: '300'
-    maxoutbuf: '0'
-    minoutbuf: '0'
-    samp_rate: samp_rate
-    type: fir_filter_fff
-    width: '200'
-    win: window.WIN_HAMMING
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate: [1056, 4.0]
-    rotation: 0
-    state: enabled
-- name: blocks_complex_to_real_0
-  id: blocks_complex_to_real
-  parameters:
-    affinity: ''
-    alias: ''
-    comment: 'USB audio: the modem waveform'
-    maxoutbuf: '0'
-    minoutbuf: '0'
-    vlen: '1'
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate: [570, 240]
-    rotation: 0
-    state: enabled
-- name: blocks_file_source_0
-  id: blocks_file_source
-  parameters:
-    affinity: ''
-    alias: ''
-    begin_tag: pmt.PMT_NIL
-    comment: ''
-    file: /home/oystein/test_la7lka.wav
-    length: '0'
-    maxoutbuf: '0'
-    minoutbuf: '0'
-    offset: '0'
-    repeat: 'True'
-    type: float
-    vlen: '1'
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate: [704, 24.0]
+    coordinate: [40, 236]
     rotation: 0
     state: enabled
 - name: blocks_float_to_short_0
@@ -236,7 +161,7 @@ blocks:
   parameters:
     affinity: ''
     alias: ''
-    comment: ''
+    comment: 2400B modem is 48k, no resampling
     maxoutbuf: '0'
     minoutbuf: '0'
     scale: '16384'
@@ -245,7 +170,7 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [900, 240]
+    coordinate: [950, 244]
     rotation: 0
     state: enabled
 - name: blocks_multiply_const_vxx_0
@@ -263,7 +188,7 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [1320, 480.0]
+    coordinate: [1460, 340]
     rotation: 0
     state: enabled
 - name: blocks_multiply_xx_0
@@ -281,7 +206,7 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [430, 240]
+    coordinate: [410, 240]
     rotation: 0
     state: enabled
 - name: blocks_short_to_float_0
@@ -289,7 +214,7 @@ blocks:
   parameters:
     affinity: ''
     alias: ''
-    comment: ''
+    comment: speech is 8k
     maxoutbuf: '0'
     minoutbuf: '0'
     scale: '16384'
@@ -298,7 +223,7 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [1000, 480.0]
+    coordinate: [1110, 340]
     rotation: 0
     state: enabled
 - name: hilbert_fc_0
@@ -316,88 +241,31 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [230, 220]
+    coordinate: [210, 220]
     rotation: 0
     state: enabled
-- name: qtgui_freq_sink_x_0
-  id: qtgui_freq_sink_x
+- name: low_pass_filter_0
+  id: low_pass_filter
   parameters:
     affinity: ''
     alias: ''
-    alpha1: '1.0'
-    alpha10: '1.0'
-    alpha2: '1.0'
-    alpha3: '1.0'
-    alpha4: '1.0'
-    alpha5: '1.0'
-    alpha6: '1.0'
-    alpha7: '1.0'
-    alpha8: '1.0'
-    alpha9: '1.0'
-    autoscale: 'False'
-    average: '0.1'
-    axislabels: 'True'
-    bw: samp_rate
-    color1: '"blue"'
-    color10: '"dark blue"'
-    color2: '"red"'
-    color3: '"green"'
-    color4: '"black"'
-    color5: '"cyan"'
-    color6: '"magenta"'
-    color7: '"yellow"'
-    color8: '"dark red"'
-    color9: '"dark green"'
-    comment: the modem carriers should sit near 900-2100 Hz
-    ctrlpanel: 'False'
-    fc: '0'
-    fftsize: '2048'
-    freqhalf: 'True'
-    grid: 'True'
-    gui_hint: ''
-    label: Relative Gain
-    label1: ''
-    label10: ''
-    label2: ''
-    label3: ''
-    label4: ''
-    label5: ''
-    label6: ''
-    label7: ''
-    label8: ''
-    label9: ''
-    legend: 'False'
+    beta: '6.76'
+    comment: FM channel, Carson
+    cutoff_freq: '6000'
+    decim: '1'
+    gain: '1'
+    interp: '1'
     maxoutbuf: '0'
     minoutbuf: '0'
-    name: demodulated audio
-    nconnections: '1'
-    norm_window: 'False'
-    showports: 'False'
-    tr_chan: '0'
-    tr_level: '0.0'
-    tr_mode: qtgui.TRIG_MODE_FREE
-    tr_tag: ''
-    type: float
-    units: dB
-    update_time: '0.10'
-    width1: '1'
-    width10: '1'
-    width2: '1'
-    width3: '1'
-    width4: '1'
-    width5: '1'
-    width6: '1'
-    width7: '1'
-    width8: '1'
-    width9: '1'
-    wintype: window.WIN_BLACKMAN_hARRIS
-    ymax: '0'
-    ymin: '-100'
+    samp_rate: samp_rate
+    type: fir_filter_ccf
+    width: '1500'
+    win: window.WIN_HAMMING
   states:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [570, 400]
+    coordinate: [560, 196]
     rotation: 0
     state: enabled
 - name: rational_resampler_xxx_0
@@ -405,27 +273,7 @@ blocks:
   parameters:
     affinity: ''
     alias: ''
-    comment: 48k -> 8k for codec2
-    decim: '6'
-    fbw: '0'
-    interp: '1'
-    maxoutbuf: '0'
-    minoutbuf: '0'
-    taps: '[]'
-    type: fff
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate: [730, 224]
-    rotation: 0
-    state: enabled
-- name: rational_resampler_xxx_0_0
-  id: rational_resampler_xxx
-  parameters:
-    affinity: ''
-    alias: ''
-    comment: 8k -> 48k for the sound card
+    comment: 8k -> 48k
     decim: '1'
     fbw: '0'
     interp: '6'
@@ -437,7 +285,7 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [1152, 456.0]
+    coordinate: [1280, 340]
     rotation: 0
     state: enabled
 - name: vocoder_freedv_rx_ss_0
@@ -445,36 +293,32 @@ blocks:
   parameters:
     affinity: ''
     alias: ''
-    comment: must match the radio
+    comment: must be 2400B
     interleave_frames: '1'
     maxoutbuf: '0'
     minoutbuf: '0'
-    mode: freedv_api.MODE_700D
+    mode: freedv_api.MODE_2400B
     squelch_enable: 'True'
     squelch_thresh: '-100.0'
   states:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [1050, 224]
+    coordinate: [1110, 228]
     rotation: 0
     state: enabled
 
 connections:
+- [analog_quadrature_demod_cf_0, '0', blocks_float_to_short_0, '0']
 - [analog_sig_source_x_0, '0', blocks_multiply_xx_0, '1']
-- [analog_sig_source_x_0_0, '0', band_pass_filter_0_0, '0']
 - [audio_source_0, '0', hilbert_fc_0, '0']
-- [band_pass_filter_0_0, '0', audio_sink_0_0, '0']
-- [blocks_complex_to_real_0, '0', qtgui_freq_sink_x_0, '0']
-- [blocks_complex_to_real_0, '0', rational_resampler_xxx_0, '0']
-- [blocks_file_source_0, '0', band_pass_filter_0_0, '0']
 - [blocks_float_to_short_0, '0', vocoder_freedv_rx_ss_0, '0']
 - [blocks_multiply_const_vxx_0, '0', audio_sink_0, '0']
-- [blocks_multiply_xx_0, '0', blocks_complex_to_real_0, '0']
-- [blocks_short_to_float_0, '0', rational_resampler_xxx_0_0, '0']
+- [blocks_multiply_xx_0, '0', low_pass_filter_0, '0']
+- [blocks_short_to_float_0, '0', rational_resampler_xxx_0, '0']
 - [hilbert_fc_0, '0', blocks_multiply_xx_0, '0']
-- [rational_resampler_xxx_0, '0', blocks_float_to_short_0, '0']
-- [rational_resampler_xxx_0_0, '0', blocks_multiply_const_vxx_0, '0']
+- [low_pass_filter_0, '0', analog_quadrature_demod_cf_0, '0']
+- [rational_resampler_xxx_0, '0', blocks_multiply_const_vxx_0, '0']
 - [vocoder_freedv_rx_ss_0, '0', blocks_short_to_float_0, '0']
 
 metadata:

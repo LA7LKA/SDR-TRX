@@ -316,7 +316,7 @@ blocks:
     affinity: ''
     alias: ''
     comment: ''
-    const: af_gain*100
+    const: af_gain
     maxoutbuf: '0'
     minoutbuf: '0'
     type: float
@@ -572,7 +572,7 @@ blocks:
     interleave_frames: '1'
     maxoutbuf: '0'
     minoutbuf: '0'
-    mode: freedv_api.MODE_1600
+    mode: freedv_api.MODE_700E
     squelch_enable: 'False'
     squelch_thresh: '-100.0'
   states:

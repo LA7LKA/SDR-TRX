@@ -84,9 +84,32 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [352, 384.0]
+    coordinate: [88, 376.0]
     rotation: 0
     state: enabled
+- name: analog_sig_source_x_0_0_0
+  id: analog_sig_source_x
+  parameters:
+    affinity: ''
+    alias: ''
+    amp: '1'
+    comment: negative mixes down
+    freq: '1000'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    offset: '0'
+    phase: '0'
+    samp_rate: samp_rate
+    showports: 'False'
+    type: float
+    waveform: analog.GR_SIN_WAVE
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [472, 104.0]
+    rotation: 0
+    state: disabled
 - name: audio_sink_0_0
   id: audio_sink
   parameters:
@@ -102,6 +125,23 @@ blocks:
     bus_source: false
     bus_structure: null
     coordinate: [1216, 232.0]
+    rotation: 0
+    state: enabled
+- name: audio_sink_0_0_0
+  id: audio_sink
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    device_name: plughw:CARD=USB,DEV=0
+    num_inputs: '1'
+    ok_to_block: 'True'
+    samp_rate: samp_rate
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [928, 56.0]
     rotation: 0
     state: enabled
 - name: audio_source_0
@@ -123,13 +163,77 @@ blocks:
     coordinate: [40, 216.0]
     rotation: 0
     state: enabled
+- name: band_pass_filter_0_0
+  id: band_pass_filter
+  parameters:
+    affinity: ''
+    alias: ''
+    beta: '6.76'
+    comment: 'complex band pass: positive keeps USB, negative keeps LSB'
+    decim: '1'
+    gain: '1'
+    high_cutoff_freq: '2500'
+    interp: '1'
+    low_cutoff_freq: '300'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    samp_rate: samp_rate
+    type: fir_filter_fff
+    width: '200'
+    win: window.WIN_HAMMING
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [664, 12.0]
+    rotation: 0
+    state: enabled
+- name: blocks_file_source_0
+  id: blocks_file_source
+  parameters:
+    affinity: ''
+    alias: ''
+    begin_tag: pmt.PMT_NIL
+    comment: ''
+    file: /home/oystein/test_la7lka.wav
+    length: '0'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    offset: '0'
+    repeat: 'True'
+    type: float
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [312, 32.0]
+    rotation: 0
+    state: enabled
+- name: blocks_float_to_short_0
+  id: blocks_float_to_short
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    scale: '16384'
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [712, 416.0]
+    rotation: 0
+    state: enabled
 - name: blocks_multiply_const_vxx_0_0
   id: blocks_multiply_const_vxx
   parameters:
     affinity: ''
     alias: ''
     comment: ''
-    const: '0.1'
+    const: '1'
     maxoutbuf: '0'
     minoutbuf: '0'
     type: float
@@ -138,7 +242,7 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [1048, 240.0]
+    coordinate: [1008, 240.0]
     rotation: 0
     state: enabled
 - name: blocks_multiply_xx_0_0
@@ -157,6 +261,23 @@ blocks:
     bus_source: false
     bus_structure: null
     coordinate: [488, 232.0]
+    rotation: 0
+    state: enabled
+- name: blocks_short_to_float_0
+  id: blocks_short_to_float
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    scale: '16384'
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [1064, 400.0]
     rotation: 0
     state: enabled
 - name: hilbert_fc_0_0
@@ -201,15 +322,82 @@ blocks:
     coordinate: [608, 200.0]
     rotation: 0
     state: enabled
+- name: rational_resampler_xxx_0
+  id: rational_resampler_xxx
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: 48k -> 8k for codec2
+    decim: '1'
+    fbw: '0'
+    interp: '1'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    taps: '[]'
+    type: fff
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [512, 392.0]
+    rotation: 0
+    state: enabled
+- name: rational_resampler_xxx_0_0
+  id: rational_resampler_xxx
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: 8k -> 48k for the sound card
+    decim: '1'
+    fbw: '0'
+    interp: '6'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    taps: '[]'
+    type: fff
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [1224, 376.0]
+    rotation: 0
+    state: enabled
+- name: vocoder_freedv_rx_ss_0
+  id: vocoder_freedv_rx_ss
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: must match the radio
+    interleave_frames: '1'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    mode: freedv_api.MODE_2400B
+    squelch_enable: 'False'
+    squelch_thresh: '-100.0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [856, 392.0]
+    rotation: 0
+    state: enabled
 
 connections:
 - [analog_nbfm_rx_0, '0', blocks_multiply_const_vxx_0_0, '0']
 - [analog_sig_source_x_0_0, '0', blocks_multiply_xx_0_0, '1']
+- [analog_sig_source_x_0_0_0, '0', band_pass_filter_0_0, '0']
 - [audio_source_0, '0', hilbert_fc_0_0, '0']
-- [blocks_multiply_const_vxx_0_0, '0', audio_sink_0_0, '0']
+- [band_pass_filter_0_0, '0', audio_sink_0_0_0, '0']
+- [blocks_file_source_0, '0', band_pass_filter_0_0, '0']
+- [blocks_float_to_short_0, '0', vocoder_freedv_rx_ss_0, '0']
+- [blocks_multiply_const_vxx_0_0, '0', rational_resampler_xxx_0, '0']
 - [blocks_multiply_xx_0_0, '0', low_pass_filter_0, '0']
+- [blocks_short_to_float_0, '0', rational_resampler_xxx_0_0, '0']
 - [hilbert_fc_0_0, '0', blocks_multiply_xx_0_0, '0']
 - [low_pass_filter_0, '0', analog_nbfm_rx_0, '0']
+- [rational_resampler_xxx_0, '0', blocks_float_to_short_0, '0']
+- [rational_resampler_xxx_0_0, '0', audio_sink_0_0, '0']
+- [vocoder_freedv_rx_ss_0, '0', blocks_short_to_float_0, '0']
 
 metadata:
   file_format: 1

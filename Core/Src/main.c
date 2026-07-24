@@ -107,7 +107,6 @@ UART_HandleTypeDef huart3;
 PCD_HandleTypeDef hpcd_USB_OTG_FS;
 
 /* USER CODE BEGIN PV */
-uint32_t dac_buffer[BLOCK_SIZE_MAX] = {0};
 
 /*
  * The ADC DMA buffer doubles as the input FIFO for the buffered modes, so it
@@ -116,9 +115,20 @@ uint32_t dac_buffer[BLOCK_SIZE_MAX] = {0};
  * time from the block period without a second copy of the data. Halfword
  * samples because the ADC is 12-bit.
  */
-#define ADC_RING_BLOCKS 5
+#define ADC_RING_BLOCKS 4
 #define ADC_RING_LEN    (ADC_RING_BLOCKS * (BLOCK_SIZE_MAX / 2))
 
+/*
+ * Transmit DAC buffer, three blocks deep. In the buffered (FreeDV) modes the
+ * DMA plays through it continuously while the main loop encodes and fills
+ * ahead, so a 53 ms OFDM encode draws down the cushion instead of stalling the
+ * output. The analog modes keep using the first block_size of it as a simple
+ * double buffer.
+ */
+#define DAC_RING_BLOCKS 3
+#define DAC_RING_LEN    (DAC_RING_BLOCKS * (BLOCK_SIZE_MAX / 2))
+
+uint32_t dac_buffer[DAC_RING_LEN] = {0};
 uint16_t adc_buffer[ADC_RING_LEN] = {0};
 
 volatile uint8_t block_ready = 0; // 0: no block ready, 1: first half ready, 2: second half ready
@@ -416,6 +426,11 @@ static uint32_t adc_rd;
 static uint32_t adc_dma_pos(void)
 {
     return ADC_RING_LEN - __HAL_DMA_GET_COUNTER(hadc1.DMA_Handle);
+}
+
+static uint32_t dac_dma_pos(void)
+{
+    return DAC_RING_LEN - __HAL_DMA_GET_COUNTER(hdac.DMA_Handle1);
 }
 
 static uint32_t adc_avail(void)
@@ -957,6 +972,8 @@ void nbfm_tx_process_block(const uint16_t *in, uint32_t *out, int n)
 
 void nbfm_init(float if_freq_hz, float fs_hz);
 static void ssb_tx_init(void);
+static void audio_dma_start(void);
+extern volatile int tx_active;
 
 /*
  * Filters are (re)initialised here rather than inline in main() so a mode
@@ -991,9 +1008,16 @@ static void dsp_filters_init(void)
 // The DAC idles at mid-scale; zero would slam the output to the rail.
 #define DAC_MID 2048
 
+static void audio_dma_restart(void)
+{
+    HAL_ADC_Stop_DMA(&hadc1);
+    HAL_DAC_Stop_DMA(&hdac, DAC_CHANNEL_1);
+    audio_dma_start();
+}
+
 static void audio_dma_start(void)
 {
-    for (uint32_t i = 0; i < BLOCK_SIZE_MAX; i++)
+    for (uint32_t i = 0; i < DAC_RING_LEN; i++)
         dac_buffer[i] = DAC_MID;
 
     memset(adc_buffer, 0, sizeof(adc_buffer));
@@ -1003,7 +1027,10 @@ static void audio_dma_start(void)
 
     adc_rd = 0;
 
-    HAL_DAC_Start_DMA(&hdac, DAC_CHANNEL_1, dac_buffer, block_size, DAC_ALIGN_12B_R);
+    uint32_t dac_len = (tx_active && mode_is_buffered(MODE)) ? DAC_RING_LEN
+                                                             : block_size;
+
+    HAL_DAC_Start_DMA(&hdac, DAC_CHANNEL_1, dac_buffer, dac_len, DAC_ALIGN_12B_R);
     HAL_ADC_Start_DMA(&hadc1, (uint32_t *)adc_buffer,
                       mode_is_buffered(MODE) ? ADC_RING_LEN : block_size);
 }
@@ -1649,14 +1676,14 @@ void cw_tx_process_block(uint32_t *out, int n)
  * which is why FreeDV operating tells you to set drive by peak and leave ALC
  * out of it.
  */
-void freedv_tx_process_block(const uint16_t *in, uint32_t *out, int n)
+/*
+ * Feed one block of microphone audio into the FreeDV chain (decimate only).
+ * The encode is separate, so this stays cheap and can run every block.
+ */
+void freedv_tx_feed(const uint16_t *in, int n)
 {
-    uint32_t t0 = DWT->CYCCNT;
-
     float *audio = &dsp_scratch[0 * SCRATCH_N];
-    float *q     = &dsp_scratch[1 * SCRATCH_N];
-
-    float peak = 0.0f;
+    float  peak  = 0.0f;
 
     for (int i = 0; i < n; i++)
     {
@@ -1665,24 +1692,31 @@ void freedv_tx_process_block(const uint16_t *in, uint32_t *out, int n)
         float a = fabsf(x);
         if (a > peak) peak = a;
 
-        audio[i] = x * mic_gain;        /* gain on speech is fine, before codec2 */
+        audio[i] = x * mic_gain;        /* gain on speech, before codec2 */
     }
 
     rx_adc_peak = peak;
     rx_blocks++;
 
+    if (freedv_ok) freedv_chain_put_speech48(audio, n);
+}
+
+/*
+ * Produce one block of modem IF into the DAC. Pulls interpolated modem samples
+ * and runs them through the SSB or FM modulator. Cheap -- no encode here.
+ */
+void freedv_tx_produce(uint32_t *out, int n)
+{
+    float *audio = &dsp_scratch[0 * SCRATCH_N];
+    float *q     = &dsp_scratch[1 * SCRATCH_N];
+
     if (!freedv_ok)
     {
-        for (int i = 0; i < n; i++) out[i] = 2048;
+        for (int i = 0; i < n; i++) out[i] = DAC_MID;
         return;
     }
 
-    uint32_t te = DWT->CYCCNT;
-    freedv_chain_put_speech48(audio, n);
-    uint32_t enc = DWT->CYCCNT - te;
-    if (enc > rx_adc_cycles) rx_adc_cycles = enc;   /* reuse a spare counter */
-
-    freedv_chain_get_modem48(audio, n);     /* now a modem waveform, not speech */
+    freedv_chain_get_modem48(audio, n);     /* modem waveform, not speech */
 
     float mpk = 0.0f;
     for (int i = 0; i < n; i++)
@@ -1701,10 +1735,6 @@ void freedv_tx_process_block(const uint16_t *in, uint32_t *out, int n)
         ssb_hilbert(audio, q, n);
         ssb_modulate(audio, q, out, n, 0);  /* FreeDV rides on USB */
     }
-
-    uint32_t dt = DWT->CYCCNT - t0;
-    if (dt > rx_cycles_max)     rx_cycles_max     = dt;
-    if (dt > rx_fdv_cycles_max) rx_fdv_cycles_max = dt;
 }
 
 /*
@@ -1716,7 +1746,6 @@ static void tx_process_block(const uint16_t *in, uint32_t *out, int n)
     if (MODE == MODE_CW)                            cw_tx_process_block(out, n);
     else if (MODE == MODE_USB || MODE == MODE_LSB)  ssb_tx_process_block(in, out, n);
     else if (MODE == MODE_NBFM)                     nbfm_tx_process_block(in, out, n);
-    else if (mode_is_freedv(MODE))                  freedv_tx_process_block(in, out, n);
     else
     {
         for (int i = 0; i < n; i++) out[i] = 2048;  /* nothing to send yet */
@@ -1821,6 +1850,7 @@ static void console_exec(char *line)
 
             tx_rearm  = 1;
             tx_active = 1;
+            if (mode_is_buffered(MODE)) audio_dma_restart();  /* deep DAC ring */
             HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_SET);
             uart_puts("tx: ");
             uart_puts(mode_name(MODE));
@@ -1829,8 +1859,10 @@ static void console_exec(char *line)
     }
     else if (str_eq(line, "rx"))
     {
+        int was_buffered = mode_is_buffered(MODE);
         tx_active = 0;
         if (mode_is_freedv(MODE) && freedv_ok) freedv_chain_set_tx(0);
+        if (was_buffered) audio_dma_restart();   /* back to the shallow RX buffer */
         HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_RESET);
         uart_puts("rx\r\n");
     }
@@ -2053,34 +2085,58 @@ int main(void)
       if (mode_is_buffered(MODE))
       {
         /*
-         * The buffered modes run the ADC as a 9600-sample ring, so the fixed
-         * adc_buffer[0]/[n] halves used by the analog modes point at stale data
-         * that the DMA only overwrites once per ring cycle -- the mic audio
-         * tore and the decode came out chopped. Follow the write pointer
-         * instead and copy out the freshest contiguous block. The ADC and DAC
-         * share TIM6, so once started a fixed lag behind the writer this never
-         * drifts.
+         * FreeDV transmit is decoupled from DAC timing. The mic is read from
+         * the ADC ring following its write pointer; the encode (up to 53 ms for
+         * 700E) runs here in the main loop; and the DAC is a deep circular
+         * buffer the DMA plays through while we fill ahead of its read pointer.
+         * A slow encode draws down the cushion instead of stalling the output.
          */
         static uint16_t tx_mic[BLOCK_SIZE_MAX / 2];
-        static uint32_t tx_rd;
+        static uint32_t tx_rd;    /* mic read pos in the ADC ring */
+        static uint32_t dac_wr;   /* fill pos in the DAC ring */
 
         if (tx_rearm)
         {
-          tx_rd     = (adc_dma_pos() + ADC_RING_LEN - 2 * n) % ADC_RING_LEN;
-          tx_rearm  = 0;
+          tx_rd    = (adc_dma_pos() + ADC_RING_LEN - 2 * n) % ADC_RING_LEN;
+          dac_wr   = 0;
+          tx_rearm = 0;
         }
 
-        if (dac_block_processing)
+        /* Feed every mic block the ADC has captured since last time. */
+        while (((adc_dma_pos() + ADC_RING_LEN - tx_rd) % ADC_RING_LEN) >= n)
         {
-          uint32_t half = (dac_block_processing == 2) ? n : 0;
-
           for (uint32_t i = 0; i < n; i++)
             tx_mic[i] = adc_buffer[(tx_rd + i) % ADC_RING_LEN];
 
           tx_rd = (tx_rd + n) % ADC_RING_LEN;
+          freedv_tx_feed(tx_mic, n);
+        }
 
-          tx_process_block(tx_mic, &dac_buffer[half], n);
-          dac_block_processing = 0;
+        /* Encode ahead -- this is the heavy, bursty part. */
+        {
+          uint32_t te = DWT->CYCCNT;
+          freedv_chain_encode();
+          uint32_t enc = DWT->CYCCNT - te;
+          if (enc > rx_adc_cycles) rx_adc_cycles = enc;
+        }
+
+        /* Fill the DAC ahead of where the DMA is reading. */
+        {
+          uint32_t play  = dac_dma_pos();
+          uint32_t ahead = (dac_wr + DAC_RING_LEN - play) % DAC_RING_LEN;
+
+          while (ahead <= DAC_RING_LEN - 2 * n &&
+                 freedv_chain_modem_avail48() >= (int)n)
+          {
+            uint32_t t0 = DWT->CYCCNT;
+            freedv_tx_produce(&dac_buffer[dac_wr], n);
+            uint32_t dt = DWT->CYCCNT - t0;
+            if (dt > rx_cycles_max)     rx_cycles_max     = dt;
+            if (dt > rx_fdv_cycles_max) rx_fdv_cycles_max = dt;
+
+            dac_wr = (dac_wr + n) % DAC_RING_LEN;
+            ahead += n;
+          }
         }
       }
       else if (dac_block_processing == 1)

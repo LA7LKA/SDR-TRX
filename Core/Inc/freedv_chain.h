@@ -74,8 +74,14 @@ void freedv_chain_reset(void);
 /* Switch direction. Flushes everything buffered, so call on PTT either way. */
 void freedv_chain_set_tx(int tx);
 
-/* Feed normalised (+-1.0) microphone audio at 48 kHz. */
+/* Feed normalised (+-1.0) microphone audio at 48 kHz (decimate only). */
 void freedv_chain_put_speech48(const float *audio48, int n);
+
+/* Encode one ready frame. Runs the heavy encode; call from the main loop. */
+void freedv_chain_encode(void);
+
+/* Modem samples ready to pull at 48 kHz, for pacing the DAC fill. */
+int freedv_chain_modem_avail48(void);
 
 /*
  * Pull modem samples at 48 kHz. Always writes n samples; anything not yet

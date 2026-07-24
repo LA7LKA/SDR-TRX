@@ -696,10 +696,31 @@ void freedv_chain_put_speech48(const float *audio48, int n)
 
             stage_used -= DECIM_IN_CHUNK;
             memmove(stage, &stage[DECIM_IN_CHUNK], stage_used * sizeof(float));
-
-            run_mod();
         }
     }
+}
+
+/*
+ * Encode whatever whole speech frames have arrived. Kept out of the feed path
+ * so the heavy OFDM+LDPC encode (about 53 ms for 700E) runs in the main loop,
+ * ahead of the DAC, rather than stalling the block that services it.
+ */
+void freedv_chain_encode(void)
+{
+    if (fdv != NULL) run_mod();
+}
+
+/* How many modem samples are ready to be pulled at 48 kHz. */
+int freedv_chain_modem_avail48(void)
+{
+    if (fdv == NULL) return 0;
+
+    int have = out_stage_used;
+
+    if (input_is_48k) have += codec2_fifo_used(out_fifo);
+    else              have += codec2_fifo_used(out_fifo) * INTERP_L;
+
+    return have;
 }
 
 int freedv_chain_get_modem48(float *out48, int n)
