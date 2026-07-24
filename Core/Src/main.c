@@ -146,6 +146,7 @@ volatile float    rx_adc_peak = 0.0f; // peak |ADC| before any filtering
 volatile uint32_t rx_cycles_max = 0;  // worst-case cycles for one block
 volatile uint32_t rx_fdv_cycles_max = 0; // worst-case cycles inside the FreeDV chain
 volatile uint32_t rx_adc_cycles = 0;     // TX: worst-case encode cycles
+volatile uint32_t tx_cushion_min = 999999; // TX: smallest DAC lead, in samples
 static   uint32_t last_report = 0;
 
 // DWT cycle counter, used to measure how much of each block period the DSP
@@ -2125,6 +2126,8 @@ int main(void)
           uint32_t play  = dac_dma_pos();
           uint32_t ahead = (dac_wr + DAC_RING_LEN - play) % DAC_RING_LEN;
 
+          if (ahead < tx_cushion_min) tx_cushion_min = ahead;
+
           while (ahead <= DAC_RING_LEN - 2 * n &&
                  freedv_chain_modem_avail48() >= (int)n)
           {
@@ -2207,7 +2210,9 @@ int main(void)
         uart_kv("us_max", (int)(rx_cycles_max / 216));
         uart_kv("us_fdv", (int)(rx_fdv_cycles_max / 216));
         uart_kv("us_enc", (int)(rx_adc_cycles / 216));
+        uart_kv("cush_us", (int)(tx_cushion_min / 48));
         rx_adc_cycles = 0;
+        tx_cushion_min = 999999;
         {
             extern volatile unsigned freedv_tx_underruns;
             uart_kv("txun", (int)freedv_tx_underruns);
