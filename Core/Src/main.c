@@ -135,6 +135,7 @@ volatile float    rx_env_avg = 0.0f; // AM: mean envelope, i.e. the carrier leve
 volatile float    rx_adc_peak = 0.0f; // peak |ADC| before any filtering
 volatile uint32_t rx_cycles_max = 0;  // worst-case cycles for one block
 volatile uint32_t rx_fdv_cycles_max = 0; // worst-case cycles inside the FreeDV chain
+volatile uint32_t rx_adc_cycles = 0;     // TX: worst-case encode cycles
 static   uint32_t last_report = 0;
 
 // DWT cycle counter, used to measure how much of each block period the DSP
@@ -1650,6 +1651,8 @@ void cw_tx_process_block(uint32_t *out, int n)
  */
 void freedv_tx_process_block(const uint16_t *in, uint32_t *out, int n)
 {
+    uint32_t t0 = DWT->CYCCNT;
+
     float *audio = &dsp_scratch[0 * SCRATCH_N];
     float *q     = &dsp_scratch[1 * SCRATCH_N];
 
@@ -1674,7 +1677,11 @@ void freedv_tx_process_block(const uint16_t *in, uint32_t *out, int n)
         return;
     }
 
+    uint32_t te = DWT->CYCCNT;
     freedv_chain_put_speech48(audio, n);
+    uint32_t enc = DWT->CYCCNT - te;
+    if (enc > rx_adc_cycles) rx_adc_cycles = enc;   /* reuse a spare counter */
+
     freedv_chain_get_modem48(audio, n);     /* now a modem waveform, not speech */
 
     float mpk = 0.0f;
@@ -1694,6 +1701,10 @@ void freedv_tx_process_block(const uint16_t *in, uint32_t *out, int n)
         ssb_hilbert(audio, q, n);
         ssb_modulate(audio, q, out, n, 0);  /* FreeDV rides on USB */
     }
+
+    uint32_t dt = DWT->CYCCNT - t0;
+    if (dt > rx_cycles_max)     rx_cycles_max     = dt;
+    if (dt > rx_fdv_cycles_max) rx_fdv_cycles_max = dt;
 }
 
 /*
@@ -2139,6 +2150,8 @@ int main(void)
         uart_kv("load_pct", (int)load_pct);
         uart_kv("us_max", (int)(rx_cycles_max / 216));
         uart_kv("us_fdv", (int)(rx_fdv_cycles_max / 216));
+        uart_kv("us_enc", (int)(rx_adc_cycles / 216));
+        rx_adc_cycles = 0;
         {
             extern volatile unsigned freedv_tx_underruns;
             uart_kv("txun", (int)freedv_tx_underruns);
