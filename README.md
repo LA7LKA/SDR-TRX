@@ -16,9 +16,11 @@ Working and tested against live signals:
 | NBFM | RX working | TX exists but is currently out of the main loop |
 | **FreeDV 1600** | **RX working** | HF, carried on SSB. ~79 % CPU |
 | **FreeDV 2400B** | **RX working** | VHF/10 m, carried on FM. ~57 % CPU |
+| **FreeDV 700D** | **RX working** | HF, weak-signal OFDM + LDPC. ~28 % average CPU |
+| **FreeDV 700E** | **RX working** | As 700D with a shorter frame, so it reacquires faster |
 
-Resource use with both FreeDV modes compiled in: **99 KB flash of 1024 KB**,
-**224 KB RAM of 320 KB**.
+Resource use with all four FreeDV modes compiled in: **227 KB flash of
+1024 KB**, **231 KB RAM of 320 KB**, leaving about 14 KB of heap headroom.
 
 ## Architecture
 
@@ -132,12 +134,43 @@ Block size is chosen per mode, because the requirements genuinely differ:
 | --- | --- | --- | --- |
 | FreeDV 1600 | 1920 | 40 ms | 1920/6 = 320 = exactly one FDMDV frame |
 | FreeDV 2400B | 1920 | 40 ms | Exactly one fmfsk frame |
+| FreeDV 700D/E | 1920 | 40 ms | Frames are 160/80 ms and do not fit a block; see below |
 | Analog | 256 | 5.3 ms | Low enough latency for CW break-in |
 
 Making a block equal exactly one modem frame matters more than it looks. With a
 mismatched block size the per-block cost alternates between cheap and expensive,
 and the expensive one overruns the period even when average load is well under
 100 %.
+
+All of this lives in one `mode_cfg[]` table in `main.c`, indexed by mode, so a
+front panel menu can drive it and adding a mode is one row rather than edits in
+five places.
+
+### Buffered modes: the DMA ring is the input FIFO
+
+700D cannot use the one-block-per-frame trick. Its frame is 160 ms and its OFDM
+sync search costs well over 100 ms, so no block period can contain it — and a
+15360-sample block would need 430 KB of RAM.
+
+Its *average* load, though, is only about 28 %: one frame every 160 ms costing
+roughly 45 ms. The problem was never the MCU, it was processing straight off
+the DMA half-buffer, which forces every block to finish inside one block
+period.
+
+So for the buffered modes the ADC DMA buffer doubles as the input FIFO. It is
+five blocks deep (200 ms) and holds halfword samples since the ADC is 12-bit;
+the DMA writes continuously and the DSP reads behind it using the transfer
+counter. There is no ISR work and no second copy of the data, and a slow frame
+drains the ring instead of losing samples. codec2's own SM1000 port takes the
+same approach with an explicit FIFO, which is what pointed the way — it runs
+700D on a slower STM32F405.
+
+Peak load may exceed the block period; only the average has to keep up. The
+telemetry reflects that: `load_pct` above 100 is expected, and `ring` and `ovr`
+are what actually matter.
+
+Analog modes keep the direct path, since latency rather than throughput is what
+CW break-in cares about. Which path a mode uses is a column in `mode_cfg[]`.
 
 ### FreeDV signal paths
 
@@ -215,6 +248,17 @@ settings, all in the Makefile:
 | `-DFREEDV_MODE_EN_DEFAULT=0` plus per-mode enables | Building every mode overflows flash; the OFDM modes' LDPC matrices alone are hundreds of KB. |
 | `-fsingle-precision-constant` (codec2 only) | The FPU is `fpv5-sp-d16`, single precision only. Unsuffixed literals promote expressions to `double`, which is then emulated in software. This removed 830 of 957 soft-float calls. |
 | `-O3` (codec2 only) | The project builds at `-Og` for debuggability. A modem that has to keep up with real time does not benefit from that. |
+| `-D__FPU_PRESENT=1` (codec2 only) | `codec2_math_arm.c`, which the OFDM modes need for `codec2_complex_dot_product_f32`, includes `arm_math.h` without a device header first, so the FPU would otherwise look absent. |
+
+The OFDM modes also need `codec2/src/codec2_math_arm.c` in the source list;
+without it `ofdm.c` will not link.
+
+One trap worth knowing about if you are short of RAM: `run_ldpc_decoder()`
+allocates roughly 32 KB across some 340 blocks **on every call**, not once at
+open time. Starve the heap and its `CALLOC` returns NULL, `assert()` fires, and
+`abort()` ends up in the `while (1)` inside newlib's `_exit()` — the board just
+stops, with no output and no fault message. Budget for the transient, not only
+for what `freedv_open()` reports.
 
 Also required, in `main.c`: `SCB_EnableICache()`, plus `ART_ACCELERATOR_ENABLE`
 and `PREFETCH_ENABLE` in `stm32f7xx_hal_conf.h`. At 216 MHz flash runs with 7
@@ -271,8 +315,6 @@ Ready-to-run GNU Radio 3.10 flowgraphs for both are in
   logic, behind a hardware abstraction so Mk1 and Mk2 keep sharing one core
 - AM (nearly free — complex baseband is already there, AM is `arm_cmplx_mag_f32`)
 - CW with iambic keyer
-- FreeDV 700D for poor HF conditions (needs `codec2_math_arm.c` wired in; CPU is
-  the binding constraint, not flash)
 - FreeDV TX
 - Full filterbank (FIR/FFT), improved AGC and noise reduction
 - PA control and protection logic

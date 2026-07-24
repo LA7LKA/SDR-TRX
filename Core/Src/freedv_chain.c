@@ -360,6 +360,7 @@ int freedv_chain_init(int chain_mode)
     int m = FREEDV_MODE_1600;
     if (chain_mode == FREEDV_CHAIN_MODE_2400B) m = FREEDV_MODE_2400B;
     if (chain_mode == FREEDV_CHAIN_MODE_700D)  m = FREEDV_MODE_700D;
+    if (chain_mode == FREEDV_CHAIN_MODE_700E)  m = FREEDV_MODE_700E;
 
     fdv = freedv_open(m);
     if (fdv == NULL)

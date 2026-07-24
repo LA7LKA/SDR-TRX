@@ -63,6 +63,7 @@
 #define BLOCK_SIZE_FREEDV  3840
 #define BLOCK_SIZE_2400B   3840
 #define BLOCK_SIZE_700D    3840
+#define BLOCK_SIZE_700E    3840
 #define BLOCK_SIZE_ANALOG   512
 
 // Active size, swapped by radio_set_mode(). Buffers stay BLOCK_SIZE_MAX.
@@ -521,6 +522,7 @@ arm_fir_instance_f32 audio_lpf;
 #define MODE_FREEDV 3   // FreeDV 1600, received as USB
 #define MODE_FREEDV_2400B 4  // FreeDV 2400B, through a normal FM audio path
 #define MODE_FREEDV_700D  5  // FreeDV 700D, OFDM + LDPC on SSB for weak signals
+#define MODE_FREEDV_700E  6  // FreeDV 700E, shorter frame than 700D, faster reacquire
 
 int MODE = MODE_FREEDV_700D;  // default mode
 
@@ -644,7 +646,8 @@ void ssb_process_block(const uint16_t *in, uint32_t *out, int n)
         for (int i = 0; i < n; i++)
             audio_buf[i] = I_buf[i] - Q_buf[i];
     }
-    else if (MODE == MODE_FREEDV || MODE == MODE_FREEDV_700D)
+    else if (MODE == MODE_FREEDV || MODE == MODE_FREEDV_700D
+                                 || MODE == MODE_FREEDV_700E)
     {
         // FreeDV rides on an ordinary SSB signal, so demodulate as USB first.
         float peak = 0.0f;
@@ -905,6 +908,7 @@ static const mode_cfg_t mode_cfg[] = {
     [MODE_FREEDV]       = { "FreeDV 1600",  BLOCK_SIZE_FREEDV, 1, FREEDV_CHAIN_MODE_1600  },
     [MODE_FREEDV_2400B] = { "FreeDV 2400B", BLOCK_SIZE_2400B,  1, FREEDV_CHAIN_MODE_2400B },
     [MODE_FREEDV_700D]  = { "FreeDV 700D",  BLOCK_SIZE_700D,   1, FREEDV_CHAIN_MODE_700D  },
+    [MODE_FREEDV_700E]  = { "FreeDV 700E",  BLOCK_SIZE_700E,   1, FREEDV_CHAIN_MODE_700E  },
 };
 
 #define MODE_COUNT ((int)(sizeof(mode_cfg) / sizeof(mode_cfg[0])))
@@ -1201,11 +1205,15 @@ int main(void)
             : 0;
 
   if (freedv_ok)
-      uart_puts(MODE == MODE_FREEDV_2400B ? "freedv: 2400B RX ready\r\n"
-              : MODE == MODE_FREEDV_700D  ? "freedv: 700D RX ready\r\n"
-                                          : "freedv: 1600 RX ready\r\n");
+  {
+      uart_puts("freedv: ");
+      uart_puts(mode_name(MODE));
+      uart_puts(" RX ready\r\n");
+  }
   else if (mode_is_freedv(MODE))
+  {
       uart_puts("freedv: init FAILED (out of heap?) - audio will be silent\r\n");
+  }
 
   uart_kv("heap_left", (int)heap_largest_free());
   uart_puts("\r\n");
