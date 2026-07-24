@@ -150,7 +150,7 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [16, 360.0]
+    coordinate: [56, 312.0]
     rotation: 0
     state: disabled
 - name: analog_sig_source_x_0_2

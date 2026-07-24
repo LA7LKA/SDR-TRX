@@ -47,13 +47,18 @@ void  codec2_free(void *ptr)                   { free(ptr); }
 #define OUT_STAGE_LEN    (INTERP_OUT_CHUNK + MAX_BLOCK)
 
 /*
- * Two modem frames is enough: the caller's input ring already absorbs the
- * bursts, so this only has to bridge one demodulator call. Sized for 2400B,
- * whose frames are 1920 samples at 48 kHz rather than the 320 that 1600
- * consumes at 8 kHz.
+ * One FIFO either side of codec2, used in both directions: on receive the
+ * input holds modem samples and the output decoded speech, on transmit the
+ * input holds speech and the output modem samples. Transmit and receive are
+ * half duplex, so sharing them costs nothing and saves the RAM that a second
+ * pair would need.
+ *
+ * Two frames is enough: the caller's ring already absorbs the bursts, so these
+ * only bridge one codec2 call. Sized for 2400B, whose frames are 1920 samples
+ * at 48 kHz rather than the 320 that 1600 consumes at 8 kHz.
  */
-#define MODEM_FIFO_LEN   4096
-#define SPEECH_FIFO_LEN  4096
+#define IN_FIFO_LEN   4096
+#define OUT_FIFO_LEN  4096
 
 /*
  * 1600 consumes about 320 modem samples per frame at 8 kHz; 2400B takes 1920
@@ -303,8 +308,8 @@ static int playback_armed;
 static int prefill_samples;
 
 static struct freedv *fdv;
-static struct FIFO   *modem_fifo;   /* 8 kHz modem samples awaiting freedv_rx */
-static struct FIFO   *speech_fifo;  /* 8 kHz decoded speech */
+static struct FIFO   *in_fifo;   /* 8 kHz modem samples awaiting freedv_rx */
+static struct FIFO   *out_fifo;  /* 8 kHz decoded speech */
 
 static int   sync_flag;
 static float snr_db;
@@ -315,6 +320,16 @@ static float snr_db;
  * the decimator. Both return speech at 8 kHz, so the output side is shared.
  */
 static int input_is_48k;
+static int chain_tx;      /* 0 = receive, 1 = transmit */
+volatile unsigned freedv_tx_underruns;
+
+/*
+ * Working buffers for whichever direction is running. The modulator and the
+ * demodulator never run at the same time, so one pair serves both; giving each
+ * its own cost 12 KB of RAM that 700D needs for its per-call LDPC allocations.
+ */
+static short chain_a[MAX_MODEM_SAMPLES];
+static short chain_b[MAX_MODEM_SAMPLES];
 
 int freedv_chain_init(int chain_mode)
 {
@@ -328,15 +343,15 @@ int freedv_chain_init(int chain_mode)
         freedv_close(fdv);
         fdv = NULL;
     }
-    if (modem_fifo != NULL)
+    if (in_fifo != NULL)
     {
-        codec2_fifo_destroy(modem_fifo);
-        modem_fifo = NULL;
+        codec2_fifo_destroy(in_fifo);
+        in_fifo = NULL;
     }
-    if (speech_fifo != NULL)
+    if (out_fifo != NULL)
     {
-        codec2_fifo_destroy(speech_fifo);
-        speech_fifo = NULL;
+        codec2_fifo_destroy(out_fifo);
+        out_fifo = NULL;
     }
 
     stage_used     = 0;
@@ -370,8 +385,9 @@ int freedv_chain_init(int chain_mode)
         return -1;
 
     prefill_samples = 3 * freedv_get_n_speech_samples(fdv);
-    if (prefill_samples > SPEECH_FIFO_LEN / 2)
-        prefill_samples = SPEECH_FIFO_LEN / 2;
+    chain_tx        = 0;
+    if (prefill_samples > OUT_FIFO_LEN / 2)
+        prefill_samples = OUT_FIFO_LEN / 2;
 
     /*
      * Squelch on, which here means "output nothing until synced".
@@ -384,9 +400,9 @@ int freedv_chain_init(int chain_mode)
      */
     freedv_set_squelch_en(fdv, true);
 
-    modem_fifo  = codec2_fifo_create(MODEM_FIFO_LEN);
-    speech_fifo = codec2_fifo_create(SPEECH_FIFO_LEN);
-    if (modem_fifo == NULL || speech_fifo == NULL)
+    in_fifo  = codec2_fifo_create(IN_FIFO_LEN);
+    out_fifo = codec2_fifo_create(OUT_FIFO_LEN);
+    if (in_fifo == NULL || out_fifo == NULL)
         return -1;
 
     return 0;
@@ -411,8 +427,8 @@ static void run_demod(void)
      * Static rather than automatic: this runs off the back of the audio
      * callback, and fdmdv_demod() already puts sizeable VLAs on the stack.
      */
-    static short demod_in[MAX_MODEM_SAMPLES];
-    static short speech[MAX_MODEM_SAMPLES];
+    short *demod_in = chain_a;
+    short *speech   = chain_b;
 
     for (int frame = 0; frame < MAX_FRAMES_PER_CALL; frame++)
     {
@@ -420,17 +436,17 @@ static void run_demod(void)
 
         if (nin > MAX_MODEM_SAMPLES)
             return;                              /* guarded at init */
-        if (codec2_fifo_used(modem_fifo) < nin)
+        if (codec2_fifo_used(in_fifo) < nin)
             return;
 
-        codec2_fifo_read(modem_fifo, demod_in, nin);
+        codec2_fifo_read(in_fifo, demod_in, nin);
 
         int nout = freedv_rx(fdv, speech, demod_in);
 
         freedv_get_modem_stats(fdv, &sync_flag, &snr_db);
 
-        if (nout > 0 && codec2_fifo_free(speech_fifo) >= nout)
-            codec2_fifo_write(speech_fifo, speech, nout);
+        if (nout > 0 && codec2_fifo_free(out_fifo) >= nout)
+            codec2_fifo_write(out_fifo, speech, nout);
     }
 }
 
@@ -459,8 +475,8 @@ void freedv_chain_put_audio48(const float *audio48, int n)
                 out16[i] = (short)v;
             }
 
-            if (codec2_fifo_free(modem_fifo) >= take)
-                codec2_fifo_write(modem_fifo, out16, take);
+            if (codec2_fifo_free(in_fifo) >= take)
+                codec2_fifo_write(in_fifo, out16, take);
 
             audio48 += take;
             n       -= take;
@@ -497,8 +513,8 @@ void freedv_chain_put_audio48(const float *audio48, int n)
                 out16[i] = (short)v;
             }
 
-            if (codec2_fifo_free(modem_fifo) >= DECIM_OUT_CHUNK)
-                codec2_fifo_write(modem_fifo, out16, DECIM_OUT_CHUNK);
+            if (codec2_fifo_free(in_fifo) >= DECIM_OUT_CHUNK)
+                codec2_fifo_write(in_fifo, out16, DECIM_OUT_CHUNK);
 
             stage_used -= DECIM_IN_CHUNK;
             memmove(stage, &stage[DECIM_IN_CHUNK], stage_used * sizeof(float));
@@ -513,11 +529,11 @@ int freedv_chain_get_speech8(int16_t *speech_out, int max)
     if (fdv == NULL)
         return 0;
 
-    int avail = codec2_fifo_used(speech_fifo);
+    int avail = codec2_fifo_used(out_fifo);
     int n     = (avail < max) ? avail : max;
 
     if (n > 0)
-        codec2_fifo_read(speech_fifo, (short *)speech_out, n);
+        codec2_fifo_read(out_fifo, (short *)speech_out, n);
 
     return n;
 }
@@ -535,7 +551,7 @@ int freedv_chain_get_speech48(float *audio48, int n)
     /* Let a cushion bank up before playing anything; see PREFILL_SAMPLES. */
     if (!playback_armed)
     {
-        if (out_stage_used + codec2_fifo_used(speech_fifo) < prefill_samples)
+        if (out_stage_used + codec2_fifo_used(out_fifo) < prefill_samples)
         {
             memset(audio48, 0, n * sizeof(float));
             return 0;
@@ -546,12 +562,12 @@ int freedv_chain_get_speech48(float *audio48, int n)
     /* Top the 48 kHz staging buffer up while whole 8 kHz chunks are available. */
     while (out_stage_used < n &&
            out_stage_used + INTERP_OUT_CHUNK <= OUT_STAGE_LEN &&
-           codec2_fifo_used(speech_fifo) >= INTERP_IN_CHUNK)
+           codec2_fifo_used(out_fifo) >= INTERP_IN_CHUNK)
     {
         static short     in16[INTERP_IN_CHUNK];
         static float32_t in8[INTERP_IN_CHUNK];
 
-        codec2_fifo_read(speech_fifo, in16, INTERP_IN_CHUNK);
+        codec2_fifo_read(out_fifo, in16, INTERP_IN_CHUNK);
 
         /* Back to the normalised +-1.0 convention the SSB path uses. */
         for (int i = 0; i < INTERP_IN_CHUNK; i++)
@@ -605,11 +621,165 @@ void freedv_chain_reset(void)
     memset(decim_state,  0, sizeof(decim_state));
     memset(interp_state, 0, sizeof(interp_state));
 
-    codec2_fifo_destroy(modem_fifo);
-    codec2_fifo_destroy(speech_fifo);
+    codec2_fifo_destroy(in_fifo);
+    codec2_fifo_destroy(out_fifo);
 
-    modem_fifo  = codec2_fifo_create(MODEM_FIFO_LEN);
-    speech_fifo = codec2_fifo_create(SPEECH_FIFO_LEN);
+    in_fifo  = codec2_fifo_create(IN_FIFO_LEN);
+    out_fifo = codec2_fifo_create(OUT_FIFO_LEN);
+}
+
+
+/* ---- transmit --------------------------------------------------------- */
+
+void freedv_chain_set_tx(int tx)
+{
+    chain_tx = tx;
+    freedv_chain_reset();          /* stale buffers would leak across PTT */
+}
+
+/*
+ * Modulate whatever whole speech frames have accumulated. Capped at one frame
+ * per call for the same reason the demodulator is: 700D's frame is 160 ms, and
+ * letting several land in one block period is what overruns it.
+ */
+static void run_mod(void)
+{
+    short *speech_in = chain_a;
+    short *mod_out   = chain_b;
+
+    int nspeech = freedv_get_n_speech_samples(fdv);
+    int nmod    = freedv_get_n_nom_modem_samples(fdv);
+
+    if (nspeech > MAX_MODEM_SAMPLES || nmod > MAX_MODEM_SAMPLES) return;
+    if (codec2_fifo_used(in_fifo) < nspeech)                     return;
+    if (codec2_fifo_free(out_fifo) < nmod)                       return;
+
+    codec2_fifo_read(in_fifo, speech_in, nspeech);
+    freedv_tx(fdv, mod_out, speech_in);
+    codec2_fifo_write(out_fifo, mod_out, nmod);
+}
+
+void freedv_chain_put_speech48(const float *audio48, int n)
+{
+    if (fdv == NULL) return;
+
+    /* Speech is always 8 kHz for codec2, whatever the modem rate. */
+    while (n > 0)
+    {
+        int space = STAGE_LEN - stage_used;
+        int take  = (n < space) ? n : space;
+
+        memcpy(&stage[stage_used], audio48, take * sizeof(float));
+        stage_used += take;
+        audio48    += take;
+        n          -= take;
+
+        while (stage_used >= DECIM_IN_CHUNK)
+        {
+            float32_t out8[DECIM_OUT_CHUNK];
+            short     out16[DECIM_OUT_CHUNK];
+
+            arm_fir_decimate_f32(&decim, stage, out8, DECIM_IN_CHUNK);
+
+            for (int i = 0; i < DECIM_OUT_CHUNK; i++)
+            {
+                float v = out8[i] * 16384.0f;
+
+                if (v >  32767.0f) v =  32767.0f;
+                if (v < -32768.0f) v = -32768.0f;
+
+                out16[i] = (short)v;
+            }
+
+            if (codec2_fifo_free(in_fifo) >= DECIM_OUT_CHUNK)
+                codec2_fifo_write(in_fifo, out16, DECIM_OUT_CHUNK);
+
+            stage_used -= DECIM_IN_CHUNK;
+            memmove(stage, &stage[DECIM_IN_CHUNK], stage_used * sizeof(float));
+
+            run_mod();
+        }
+    }
+}
+
+int freedv_chain_get_modem48(float *out48, int n)
+{
+    int produced = 0;
+
+    if (fdv == NULL)
+    {
+        memset(out48, 0, n * sizeof(float));
+        return 0;
+    }
+
+    if (input_is_48k)
+    {
+        /* 2400B's modem is already at 48 kHz: straight out, no resampling. */
+        int avail = codec2_fifo_used(out_fifo);
+
+        produced = (avail < n) ? avail : n;
+
+        if (produced > 0)
+        {
+            short *buf = chain_a;
+
+            codec2_fifo_read(out_fifo, buf, produced);
+
+            for (int i = 0; i < produced; i++)
+                out48[i] = (float)buf[i] / 16384.0f;
+        }
+    }
+    else
+    {
+        /* Let a cushion build first, or the modem waveform comes out in pieces. */
+        if (!playback_armed)
+        {
+            if (out_stage_used + codec2_fifo_used(out_fifo) < prefill_samples)
+            {
+                memset(out48, 0, n * sizeof(float));
+                return 0;
+            }
+            playback_armed = 1;
+        }
+
+        while (out_stage_used < n &&
+               out_stage_used + INTERP_OUT_CHUNK <= OUT_STAGE_LEN &&
+               codec2_fifo_used(out_fifo) >= INTERP_IN_CHUNK)
+        {
+            static short     in16[INTERP_IN_CHUNK];
+            static float32_t in8[INTERP_IN_CHUNK];
+
+            codec2_fifo_read(out_fifo, in16, INTERP_IN_CHUNK);
+
+            for (int i = 0; i < INTERP_IN_CHUNK; i++)
+                in8[i] = (float)in16[i] / 16384.0f;
+
+            arm_fir_interpolate_f32(&interp, in8, &out_stage[out_stage_used],
+                                    INTERP_IN_CHUNK);
+
+            out_stage_used += INTERP_OUT_CHUNK;
+        }
+
+        produced = (out_stage_used < n) ? out_stage_used : n;
+
+        if (produced > 0)
+        {
+            memcpy(out48, out_stage, produced * sizeof(float));
+
+            out_stage_used -= produced;
+            memmove(out_stage, &out_stage[produced],
+                    out_stage_used * sizeof(float));
+        }
+    }
+
+    if (produced < n)
+    {
+        memset(&out48[produced], 0, (n - produced) * sizeof(float));
+        playback_armed = 0;
+        if (chain_tx) freedv_tx_underruns++;   /* gap in the modem waveform */
+    }
+
+    return produced;
 }
 
 int freedv_chain_synced(void)

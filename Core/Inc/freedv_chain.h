@@ -60,6 +60,29 @@ int freedv_chain_get_speech48(float *audio48, int n);
  */
 void freedv_chain_reset(void);
 
+/* ---- transmit ---------------------------------------------------------
+ *
+ * Mirrors the receive side. Speech goes in at 48 kHz and is decimated to the
+ * 8 kHz codec2 wants; modem samples come back out at 48 kHz, interpolated for
+ * the modes whose modem runs at 8 kHz and passed straight through for 2400B,
+ * whose modem is already at 48 kHz.
+ *
+ * What comes out is the signal to modulate, not audio: for 1600, 700D and 700E
+ * it is fed to the SSB modulator, for 2400B to the FM one.
+ */
+
+/* Switch direction. Flushes everything buffered, so call on PTT either way. */
+void freedv_chain_set_tx(int tx);
+
+/* Feed normalised (+-1.0) microphone audio at 48 kHz. */
+void freedv_chain_put_speech48(const float *audio48, int n);
+
+/*
+ * Pull modem samples at 48 kHz. Always writes n samples; anything not yet
+ * produced is written as silence, and the return value is how many were real.
+ */
+int freedv_chain_get_modem48(float *out48, int n);
+
 /* Non-zero once the modem has acquired sync. */
 int freedv_chain_synced(void);
 

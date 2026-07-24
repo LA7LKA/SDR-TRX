@@ -590,7 +590,7 @@ arm_fir_instance_f32 audio_lpf;
 #define MODE_AM           7  // AM, envelope detection off the complex baseband
 #define MODE_CW           8  // CW, SSB demod into a narrow filter at the tone pitch
 
-int MODE = MODE_CW;  // default mode
+int MODE = MODE_USB;  // default mode
 
 /*
  * Fill an interleaved cos/sin buffer for the IF mixer.
@@ -890,31 +890,44 @@ void nbfm_process_block(const uint16_t *in, uint32_t *out, int n)
 
 extern float mic_gain;   /* defined with the SSB modulator below */
 
+/*
+ * Frequency modulate a ready audio buffer.
+ *
+ * Deviation is a parameter because voice and data want different values:
+ * 5 kHz for speech, but 2.5 kHz for FreeDV 2400B, which is what its
+ * demodulator expects and what stops the discriminator running into atan2's
+ * wrap point at the far end.
+ */
+static void fm_modulate(const float *audio, uint32_t *out, int n, float dev_hz)
+{
+    static float phase = 0.0f;
+
+    const float kf   = 2.0f * (float)M_PI * dev_hz  / 48000.0f;
+    const float w_if = 2.0f * (float)M_PI * 12000.0f / 48000.0f;
+
+    for (int i = 0; i < n; i++)
+    {
+        phase += w_if + kf * audio[i];
+
+        if (phase >  (float)M_PI) phase -= TWO_PI;
+        if (phase < -(float)M_PI) phase += TWO_PI;
+
+        out[i] = (uint32_t)((cosf(phase) * 2048.0f) + 2048.0f);
+    }
+}
+
 void nbfm_tx_process_block(const uint16_t *in, uint32_t *out, int n)
 {
     /* Shared with the receive path: transmit and receive never run together. */
     float *audio_in       = &dsp_scratch[0 * SCRATCH_N];
     float *audio_filtered = &dsp_scratch[1 * SCRATCH_N];
 
-    static float phase = 0.0f;
-
-    /*
-     * kf is the deviation at full-scale audio, so the microphone gain sets
-     * deviation directly and predictably. It used to be scaled by a fixed 10
-     * on top of a 5 kHz constant, which meant full-scale audio asked for
-     * 50 kHz -- far outside what a 12 kHz IF can carry at 48 kHz sampling, and
-     * only ever tolerable because the microphone was quiet.
-     *
-     * At +-5 kHz with 3 kHz audio, Carson gives about 16 kHz occupied, so the
-     * signal spans 4 to 20 kHz around the IF and stays clear of Nyquist.
-     */
     const float dev_hz = 5000.0f;
-    const float kf   = 2.0f * M_PI * dev_hz  / 48000.0f;
-    const float w_if = 2.0f * M_PI * 12000.0f / 48000.0f;
 
     float peak = 0.0f;
 
-    for (int i = 0; i < n; i++) {
+    for (int i = 0; i < n; i++)
+    {
         float x = (((float)(in[i] & 0x0FFF)) - 2048.0f) / 2048.0f;
 
         float a = fabsf(x);
@@ -925,27 +938,16 @@ void nbfm_tx_process_block(const uint16_t *in, uint32_t *out, int n)
 
     rx_adc_peak = peak;
 
-    // 2) Audio LPF
     arm_fir_f32(&audio_lpf, audio_in, audio_filtered, n);
 
     float dpk = 0.0f;
-
-    // 3) FM direkte på NCO
-    for (int i = 0; i < n; i++) {
-
+    for (int i = 0; i < n; i++)
+    {
         float a = fabsf(audio_filtered[i]);
         if (a > dpk) dpk = a;
-
-        // FM-modulasjon: fase += kf * audio
-        phase += w_if + kf * audio_filtered[i];
-
-        if (phase > M_PI) phase -= TWO_PI;
-        if (phase < -M_PI) phase += TWO_PI;
-
-        float s = cosf(phase);   // real FM på 12 kHz IF
-
-        out[i] = (uint32_t)((s * 2048.0f) + 2048.0f);
     }
+
+    fm_modulate(audio_filtered, out, n, dev_hz);
 
     rx_peak = dpk * dev_hz / 1000.0f;   /* peak deviation in kHz */
     rx_blocks++;
@@ -1330,7 +1332,14 @@ void am_process_block(const uint16_t *in, uint32_t *out, int n)
 #define SSB_HIL_DELAY ((SSB_HIL_TAPS - 1) / 2)
 
 static float ssb_hil_coeffs[SSB_HIL_TAPS];
-static float ssb_hil_state[SSB_HIL_TAPS + BLOCK_SIZE_ANALOG / 2];
+/*
+ * State is sized for the analog block, so anything longer must be fed through
+ * in pieces: CMSIS writes numTaps + blockSize - 1 floats here, and the FreeDV
+ * path calls this with 1920 where the analog modes use 256.
+ */
+#define SSB_HIL_MAXBLK (BLOCK_SIZE_ANALOG / 2)
+
+static float ssb_hil_state[SSB_HIL_TAPS + SSB_HIL_MAXBLK];
 static arm_fir_instance_f32 ssb_hil;
 
 /* Speech band limiting: high pass at 300 Hz, low pass at 2700 Hz. */
@@ -1385,7 +1394,7 @@ static void ssb_tx_init(void)
     }
 
     arm_fir_init_f32(&ssb_hil, SSB_HIL_TAPS, ssb_hil_coeffs,
-                     ssb_hil_state, BLOCK_SIZE_ANALOG / 2);
+                     ssb_hil_state, SSB_HIL_MAXBLK);
     arm_biquad_cascade_df1_init_f32(&ssb_audio, 2,
                                     (float *)ssb_audio_coeffs, ssb_audio_state);
 }
@@ -1403,33 +1412,34 @@ void ssb_tx_restart(void)
     ssb_delay_pos = 0;
 }
 
-void ssb_tx_process_block(const uint16_t *in, uint32_t *out, int n)
+/*
+ * Run the Hilbert in chunks no larger than the state was sized for. The filter
+ * keeps its own history between calls, so splitting the block changes nothing
+ * about the output -- it only keeps CMSIS from writing past the state buffer.
+ */
+static void ssb_hilbert(const float *in, float *out, int n)
 {
-    float *audio = &dsp_scratch[0 * SCRATCH_N];
-    float *q     = &dsp_scratch[1 * SCRATCH_N];
-
-    float peak = 0.0f;
-
-    for (int i = 0; i < n; i++)
+    for (int off = 0; off < n; off += SSB_HIL_MAXBLK)
     {
-        float x = ((float)(in[i] & 0x0FFF) - 2048.0f) / 2048.0f;
+        int m = n - off;
 
-        float a = fabsf(x);
-        if (a > peak) peak = a;
+        if (m > SSB_HIL_MAXBLK) m = SSB_HIL_MAXBLK;
 
-        audio[i] = x * mic_gain;
+        arm_fir_f32(&ssb_hil, (float *)&in[off], &out[off], m);
     }
+}
 
-    rx_adc_peak = peak;                 /* raw mic level, before the gain */
-
-    arm_biquad_cascade_df1_f32(&ssb_audio, audio, audio, n);
-    arm_fir_f32(&ssb_hil, audio, q, n);
-
-    const int lsb = (MODE == MODE_LSB);
-
+/*
+ * Modulate a ready audio buffer. Split out so the FreeDV path can reach it:
+ * a modem waveform must not be run through the speech band pass or the
+ * microphone gain, since it is already shaped and any further filtering or
+ * compression distorts it.
+ */
+static void ssb_modulate(const float *audio, const float *q,
+                         uint32_t *out, int n, int lsb)
+{
     for (int i = 0; i < n; i++)
     {
-        /* I is the audio delayed to line up with the Hilbert output. */
         float d = ssb_delay[ssb_delay_pos];
 
         ssb_delay[ssb_delay_pos] = audio[i];
@@ -1452,6 +1462,32 @@ void ssb_tx_process_block(const uint16_t *in, uint32_t *out, int n)
 
         out[i] = (uint32_t)y;
     }
+}
+
+void ssb_tx_process_block(const uint16_t *in, uint32_t *out, int n)
+{
+    float *audio = &dsp_scratch[0 * SCRATCH_N];
+    float *q     = &dsp_scratch[1 * SCRATCH_N];
+
+    float peak = 0.0f;
+
+    for (int i = 0; i < n; i++)
+    {
+        float x = ((float)(in[i] & 0x0FFF) - 2048.0f) / 2048.0f;
+
+        float a = fabsf(x);
+        if (a > peak) peak = a;
+
+        audio[i] = x * mic_gain;
+    }
+
+    rx_adc_peak = peak;                 /* raw mic level, before the gain */
+    rx_blocks++;
+
+    arm_biquad_cascade_df1_f32(&ssb_audio, audio, audio, n);
+    ssb_hilbert(audio, q, n);
+
+    ssb_modulate(audio, q, out, n, MODE == MODE_LSB);
 }
 
 
@@ -1599,6 +1635,68 @@ void cw_tx_process_block(uint32_t *out, int n)
 
 
 /*
+ * FreeDV transmit.
+ *
+ * The microphone goes into codec2, and what comes back is a modem waveform
+ * that still has to be put on the air by one of the analog modulators: 1600,
+ * 700D and 700E ride on SSB, 2400B on FM. So this is the vocoder and modem in
+ * front of the modulators, not a modulator of its own.
+ *
+ * Note what is deliberately absent: no speech band pass, no microphone gain,
+ * no compression on the modem waveform. Those belong to voice. Applying them
+ * to a modem signal distorts the very thing the far end has to demodulate,
+ * which is why FreeDV operating tells you to set drive by peak and leave ALC
+ * out of it.
+ */
+void freedv_tx_process_block(const uint16_t *in, uint32_t *out, int n)
+{
+    float *audio = &dsp_scratch[0 * SCRATCH_N];
+    float *q     = &dsp_scratch[1 * SCRATCH_N];
+
+    float peak = 0.0f;
+
+    for (int i = 0; i < n; i++)
+    {
+        float x = ((float)(in[i] & 0x0FFF) - 2048.0f) / 2048.0f;
+
+        float a = fabsf(x);
+        if (a > peak) peak = a;
+
+        audio[i] = x * mic_gain;        /* gain on speech is fine, before codec2 */
+    }
+
+    rx_adc_peak = peak;
+    rx_blocks++;
+
+    if (!freedv_ok)
+    {
+        for (int i = 0; i < n; i++) out[i] = 2048;
+        return;
+    }
+
+    freedv_chain_put_speech48(audio, n);
+    freedv_chain_get_modem48(audio, n);     /* now a modem waveform, not speech */
+
+    float mpk = 0.0f;
+    for (int i = 0; i < n; i++)
+    {
+        float a = fabsf(audio[i]);
+        if (a > mpk) mpk = a;
+    }
+    rx_peak = mpk;                          /* modem drive level */
+
+    if (MODE == MODE_FREEDV_2400B)
+    {
+        fm_modulate(audio, out, n, 2500.0f);   /* what 2400B expects */
+    }
+    else
+    {
+        ssb_hilbert(audio, q, n);
+        ssb_modulate(audio, q, out, n, 0);  /* FreeDV rides on USB */
+    }
+}
+
+/*
  * Transmit dispatch. CW keys its own carrier and takes no input; the voice
  * modes modulate whatever is on the microphone ADC.
  */
@@ -1607,6 +1705,7 @@ static void tx_process_block(const uint16_t *in, uint32_t *out, int n)
     if (MODE == MODE_CW)                            cw_tx_process_block(out, n);
     else if (MODE == MODE_USB || MODE == MODE_LSB)  ssb_tx_process_block(in, out, n);
     else if (MODE == MODE_NBFM)                     nbfm_tx_process_block(in, out, n);
+    else if (mode_is_freedv(MODE))                  freedv_tx_process_block(in, out, n);
     else
     {
         for (int i = 0; i < n; i++) out[i] = 2048;  /* nothing to send yet */
@@ -1616,7 +1715,7 @@ static void tx_process_block(const uint16_t *in, uint32_t *out, int n)
 static int tx_supported(int mode)
 {
     return mode == MODE_CW || mode == MODE_USB || mode == MODE_LSB
-        || mode == MODE_NBFM;
+        || mode == MODE_NBFM || mode_is_freedv(mode);
 }
 
 /* ------------------------------------------------------------------------
@@ -1630,6 +1729,7 @@ static int tx_supported(int mode)
  * --------------------------------------------------------------------- */
 
 volatile int tx_active = 0;      /* set by ptt/tx, cleared by rx */
+volatile int tx_rearm  = 1;      /* re-align the TX mic read on each PTT */
 
 static char cons_line[64];
 static int  cons_len;
@@ -1706,6 +1806,9 @@ static void console_exec(char *line)
             if (MODE == MODE_CW) cw_tx_restart();
             else                 ssb_tx_restart();
 
+            if (mode_is_freedv(MODE) && freedv_ok) freedv_chain_set_tx(1);
+
+            tx_rearm  = 1;
             tx_active = 1;
             HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_SET);
             uart_puts("tx: ");
@@ -1716,6 +1819,7 @@ static void console_exec(char *line)
     else if (str_eq(line, "rx"))
     {
         tx_active = 0;
+        if (mode_is_freedv(MODE) && freedv_ok) freedv_chain_set_tx(0);
         HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_RESET);
         uart_puts("rx\r\n");
     }
@@ -1935,7 +2039,40 @@ int main(void)
     {
       uint32_t n = block_size / 2;
 
-      if (dac_block_processing == 1)
+      if (mode_is_buffered(MODE))
+      {
+        /*
+         * The buffered modes run the ADC as a 9600-sample ring, so the fixed
+         * adc_buffer[0]/[n] halves used by the analog modes point at stale data
+         * that the DMA only overwrites once per ring cycle -- the mic audio
+         * tore and the decode came out chopped. Follow the write pointer
+         * instead and copy out the freshest contiguous block. The ADC and DAC
+         * share TIM6, so once started a fixed lag behind the writer this never
+         * drifts.
+         */
+        static uint16_t tx_mic[BLOCK_SIZE_MAX / 2];
+        static uint32_t tx_rd;
+
+        if (tx_rearm)
+        {
+          tx_rd     = (adc_dma_pos() + ADC_RING_LEN - 2 * n) % ADC_RING_LEN;
+          tx_rearm  = 0;
+        }
+
+        if (dac_block_processing)
+        {
+          uint32_t half = (dac_block_processing == 2) ? n : 0;
+
+          for (uint32_t i = 0; i < n; i++)
+            tx_mic[i] = adc_buffer[(tx_rd + i) % ADC_RING_LEN];
+
+          tx_rd = (tx_rd + n) % ADC_RING_LEN;
+
+          tx_process_block(tx_mic, &dac_buffer[half], n);
+          dac_block_processing = 0;
+        }
+      }
+      else if (dac_block_processing == 1)
       { tx_process_block(&adc_buffer[0], &dac_buffer[0], n); dac_block_processing = 0; }
       else if (dac_block_processing == 2)
       { tx_process_block(&adc_buffer[n], &dac_buffer[n], n); dac_block_processing = 0; }
@@ -2002,6 +2139,11 @@ int main(void)
         uart_kv("load_pct", (int)load_pct);
         uart_kv("us_max", (int)(rx_cycles_max / 216));
         uart_kv("us_fdv", (int)(rx_fdv_cycles_max / 216));
+        {
+            extern volatile unsigned freedv_tx_underruns;
+            uart_kv("txun", (int)freedv_tx_underruns);
+            freedv_tx_underruns = 0;
+        }
         uart_kv("adc_x1000", (int)(rx_adc_peak * 1000.0f));
         uart_kv("peak_x1000", (int)(rx_peak * 1000.0f));
         uart_kv("rms_x1000", (int)(rx_rms * 1000.0f));
