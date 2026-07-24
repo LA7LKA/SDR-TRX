@@ -175,6 +175,9 @@ Signals are generated with GNU Radio on a PC rather than off the air:
   — at 10x that, the discriminator sits at the wrap point and every wrap is an
   audible click.
 
+Ready-to-run GNU Radio 3.10 flowgraphs for both are in
+[GNURadio/](GNURadio/README.md).
+
 ## Roadmap
 
 - AM (nearly free — complex baseband is already there, AM is `arm_cmplx_mag_f32`)
