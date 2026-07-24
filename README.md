@@ -279,6 +279,34 @@ Ready-to-run GNU Radio 3.10 flowgraphs for both are in
 - CAT control
 - Waterfall/spectrum display
 
+### Further out: M17
+
+M17 is an open digital voice protocol built on Codec2, so most of the hard part
+here — getting Codec2 to run in real time on this MCU — is already done. Its
+vocoder mode costs almost nothing to add:
+
+| | Flash | RAM |
+| --- | --- | --- |
+| Current (1600 + 2400B) | 101 264 B | 228 588 B |
+| Enabling `CODEC2_MODE_3200_EN` | 104 508 B | 228 588 B |
+| **Difference** | **+3 244 B** | **0 B** |
+
+3200 shares `sine`, `nlp`, `lpc` and `quantise` with 1300; only the
+quantisation path differs.
+
+M17's 40 ms frame is 1920 samples at 48 kHz, which is exactly the block size
+the FreeDV modes already use, so the per-mode block machinery fits unchanged.
+What is missing is the protocol layer: an RRC matched filter, symbol timing
+recovery at 4800 sym/s, a Viterbi decoder for the K=5 rate-1/2 convolutional
+code, and M17 framing. `libm17` exists as an embeddable C reference, and
+OpenRTX already runs M17 on an STM32F405 at 168 MHz, so an F746 with the
+instruction cache enabled has room to spare.
+
+The natural target for M17 is VHF/UHF rather than HF, which would mean a third
+front end alongside Mk1 and Mk2 — and a much simpler one, since image rejection
+on a single narrow band does not need up-conversion. The 12 kHz IF interface
+means the DSP core would not change.
+
 ## Licensing
 
 This project is licensed under the **GNU General Public License v3.0** — see
