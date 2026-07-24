@@ -22,6 +22,7 @@ Working and tested against live signals:
 | **CW** | **RX working** | SSB into a 250 Hz filter at 700 Hz, 5.3 ms blocks |
 | **CW transmit** | **working** | Shaped keying, beacon on DAC1 |
 | **SSB transmit** | **working** | Phasing method; unwanted sideband below the bench noise floor |
+| **NBFM transmit** | built | Deviation set by mic gain, reported in telemetry |
 
 Resource use with all four FreeDV modes compiled in: **227 KB flash of
 1024 KB**, **231 KB RAM of 320 KB**, leaving about 14 KB of heap headroom.

@@ -888,6 +888,8 @@ void nbfm_process_block(const uint16_t *in, uint32_t *out, int n)
     }
 }
 
+extern float mic_gain;   /* defined with the SSB modulator below */
+
 void nbfm_tx_process_block(const uint16_t *in, uint32_t *out, int n)
 {
     /* Shared with the receive path: transmit and receive never run together. */
@@ -896,20 +898,43 @@ void nbfm_tx_process_block(const uint16_t *in, uint32_t *out, int n)
 
     static float phase = 0.0f;
 
-    const float kf = 2.0f * M_PI * 5000.0f / 48000.0f;   // FM deviation
-    const float w_if = 2.0f * M_PI * 12000.0f / 48000.0f; // 12 kHz IF
+    /*
+     * kf is the deviation at full-scale audio, so the microphone gain sets
+     * deviation directly and predictably. It used to be scaled by a fixed 10
+     * on top of a 5 kHz constant, which meant full-scale audio asked for
+     * 50 kHz -- far outside what a 12 kHz IF can carry at 48 kHz sampling, and
+     * only ever tolerable because the microphone was quiet.
+     *
+     * At +-5 kHz with 3 kHz audio, Carson gives about 16 kHz occupied, so the
+     * signal spans 4 to 20 kHz around the IF and stays clear of Nyquist.
+     */
+    const float dev_hz = 5000.0f;
+    const float kf   = 2.0f * M_PI * dev_hz  / 48000.0f;
+    const float w_if = 2.0f * M_PI * 12000.0f / 48000.0f;
 
-    // 1) ADC → normalisert audio
+    float peak = 0.0f;
+
     for (int i = 0; i < n; i++) {
-        uint32_t raw = in[i] & 0x0FFF;
-        audio_in[i] = (((float)raw - 2048.0f) / 2048.0f) * 10.0f; // scale to ±10
+        float x = (((float)(in[i] & 0x0FFF)) - 2048.0f) / 2048.0f;
+
+        float a = fabsf(x);
+        if (a > peak) peak = a;
+
+        audio_in[i] = x * mic_gain;
     }
+
+    rx_adc_peak = peak;
 
     // 2) Audio LPF
     arm_fir_f32(&audio_lpf, audio_in, audio_filtered, n);
 
+    float dpk = 0.0f;
+
     // 3) FM direkte på NCO
     for (int i = 0; i < n; i++) {
+
+        float a = fabsf(audio_filtered[i]);
+        if (a > dpk) dpk = a;
 
         // FM-modulasjon: fase += kf * audio
         phase += w_if + kf * audio_filtered[i];
@@ -921,6 +946,9 @@ void nbfm_tx_process_block(const uint16_t *in, uint32_t *out, int n)
 
         out[i] = (uint32_t)((s * 2048.0f) + 2048.0f);
     }
+
+    rx_peak = dpk * dev_hz / 1000.0f;   /* peak deviation in kHz */
+    rx_blocks++;
 }
 
 
@@ -1331,7 +1359,7 @@ static int   ssb_delay_pos;
  * floor. Adjustable from the console so the level can be set while watching
  * adc_x1000 and the scope.
  */
-static float mic_gain = 1.0f;
+float mic_gain = 1.0f;
 
 static float ssb_osc_re = 1.0f, ssb_osc_im = 0.0f;
 static float ssb_step_re, ssb_step_im;

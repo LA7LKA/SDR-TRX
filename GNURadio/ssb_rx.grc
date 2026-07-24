@@ -126,7 +126,7 @@ blocks:
     bus_structure: null
     coordinate: [848, 88.0]
     rotation: 0
-    state: disabled
+    state: enabled
 - name: audio_sink_0
   id: audio_sink
   parameters:
@@ -267,14 +267,14 @@ blocks:
     bus_structure: null
     coordinate: [688, 16.0]
     rotation: 0
-    state: enabled
+    state: disabled
 - name: blocks_multiply_const_vxx_0
   id: blocks_multiply_const_vxx
   parameters:
     affinity: ''
     alias: ''
     comment: ''
-    const: af_gain*10
+    const: af_gain*100
     maxoutbuf: '0'
     minoutbuf: '0'
     type: float
@@ -467,7 +467,7 @@ blocks:
 
 connections:
 - [analog_sig_source_x_0, '0', blocks_multiply_xx_0, '1']
-- [analog_sig_source_x_0_0, '0', audio_sink_0_0, '0']
+- [analog_sig_source_x_0_0, '0', band_pass_filter_0_0, '0']
 - [audio_source_0, '0', hilbert_fc_0, '0']
 - [band_pass_filter_0, '0', blocks_complex_to_real_0, '0']
 - [band_pass_filter_0, '0', qtgui_waterfall_sink_x_0, '0']
