@@ -18,7 +18,7 @@ Working and tested against live signals:
 | **FreeDV 2400B** | **RX + TX working** | VHF/10 m, carried on FM |
 | **FreeDV 700D** | **RX + TX working** | HF, weak-signal OFDM + LDPC |
 | **FreeDV 700E** | **RX + TX working** | As 700D with a shorter frame, so it reacquires faster |
-| **AM** | **RX working** | Envelope detection, own path with no Hilbert |
+| **AM** | **RX + TX working** | Envelope detection in, carrier + both sidebands out |
 | **CW** | **RX working** | SSB into a 250 Hz filter at 700 Hz, 5.3 ms blocks |
 | **CW transmit** | **working** | Shaped keying, beacon on DAC1 |
 | **SSB transmit** | **working** | Phasing method; unwanted sideband below the bench noise floor |
@@ -294,6 +294,7 @@ rather than a second thing to debug at the same time as transmit.
 > tx            key the CW beacon
 > rx            back to receive
 > mic 15        microphone gain
+> amtone        AM 1 kHz test tone, to prove the modulator without a mic
 > wpm 25        CW speed
 > stat          current state
 ```

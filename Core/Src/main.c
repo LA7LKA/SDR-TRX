@@ -973,6 +973,7 @@ void nbfm_tx_process_block(const uint16_t *in, uint16_t *out, int n)
 
 void nbfm_init(float if_freq_hz, float fs_hz);
 static void ssb_tx_init(void);
+extern volatile int am_testtone;
 static void audio_dma_start(void);
 extern volatile int tx_active;
 
@@ -1739,6 +1740,93 @@ void freedv_tx_produce(uint16_t *out, int n)
 }
 
 /*
+ * AM transmit.
+ *
+ * Amplitude modulation is a carrier plus the audio riding on it: the envelope
+ * is (1 + m*audio) and that multiplies a cos at the IF. Unlike SSB there is no
+ * Hilbert and no sideband selection -- both sidebands are sent, symmetric
+ * about the carrier -- so this is simpler than the SSB modulator, not harder.
+ *
+ * The modulation index m is kept a little under 1 so the envelope never
+ * reaches zero; at m = 1 it just touches zero (100 %), and above that it would
+ * go negative and distort, exactly the over-modulation the receiver side
+ * showed. Mic gain sets the drive into it.
+ */
+void am_tx_process_block(const uint16_t *in, uint16_t *out, int n)
+{
+    float *audio = &dsp_scratch[0 * SCRATCH_N];
+
+    float peak = 0.0f;
+
+    if (am_testtone)
+    {
+        /* Fixed internal 1 kHz tone at 50% depth -- removes the mic entirely,
+           so a clean AM signal here proves the modulator. */
+        static float ph = 0.0f;
+        const float dph = 2.0f * (float)M_PI * 1000.0f / 48000.0f;
+
+        for (int i = 0; i < n; i++)
+        {
+            audio[i] = 0.5f * cosf(ph);
+            ph += dph;
+            if (ph > 2.0f * (float)M_PI) ph -= 2.0f * (float)M_PI;
+        }
+        rx_adc_peak = 0.5f;
+    }
+    else
+    {
+        for (int i = 0; i < n; i++)
+        {
+            float x = ((float)(in[i] & 0x0FFF) - 2048.0f) / 2048.0f;
+
+            float a = fabsf(x);
+            if (a > peak) peak = a;
+
+            audio[i] = x * mic_gain;
+        }
+
+        rx_adc_peak = peak;
+
+        /* Speech band limiting, reusing the SSB audio filter. */
+        arm_biquad_cascade_df1_f32(&ssb_audio, audio, audio, n);
+    }
+
+    rx_blocks++;
+
+    const float m = 0.95f;      /* keep the envelope non-negative */
+
+    float mpk = 0.0f;
+
+    for (int i = 0; i < n; i++)
+    {
+        float env = 1.0f + m * audio[i];
+
+        if (env < 0.0f) env = 0.0f;              /* no over-modulation */
+        if (env > mpk)  mpk  = env;
+
+        float carrier = ssb_osc_re;              /* cos at the IF */
+
+        float nre = ssb_osc_re * ssb_step_re - ssb_osc_im * ssb_step_im;
+        float nim = ssb_osc_re * ssb_step_im + ssb_osc_im * ssb_step_re;
+        float g   = 1.5f - 0.5f * (nre * nre + nim * nim);
+
+        ssb_osc_re = nre * g;
+        ssb_osc_im = nim * g;
+
+        /* 900 rather than 1800: full modulation reaches ~2x the carrier, and
+           this keeps the peak inside the DAC swing. */
+        float y = env * carrier * 900.0f + 2048.0f;
+
+        if (y < 0.0f)    y = 0.0f;
+        if (y > 4095.0f) y = 4095.0f;
+
+        out[i] = (uint16_t)y;
+    }
+
+    rx_peak = mpk;                                /* peak envelope */
+}
+
+/*
  * Transmit dispatch. CW keys its own carrier and takes no input; the voice
  * modes modulate whatever is on the microphone ADC.
  */
@@ -1747,6 +1835,7 @@ static void tx_process_block(const uint16_t *in, uint16_t *out, int n)
     if (MODE == MODE_CW)                            cw_tx_process_block(out, n);
     else if (MODE == MODE_USB || MODE == MODE_LSB)  ssb_tx_process_block(in, out, n);
     else if (MODE == MODE_NBFM)                     nbfm_tx_process_block(in, out, n);
+    else if (MODE == MODE_AM)                       am_tx_process_block(in, out, n);
     else
     {
         for (int i = 0; i < n; i++) out[i] = 2048;  /* nothing to send yet */
@@ -1756,7 +1845,7 @@ static void tx_process_block(const uint16_t *in, uint16_t *out, int n)
 static int tx_supported(int mode)
 {
     return mode == MODE_CW || mode == MODE_USB || mode == MODE_LSB
-        || mode == MODE_NBFM || mode_is_freedv(mode);
+        || mode == MODE_NBFM || mode == MODE_AM || mode_is_freedv(mode);
 }
 
 /* ------------------------------------------------------------------------
@@ -1771,6 +1860,7 @@ static int tx_supported(int mode)
 
 volatile int tx_active = 0;      /* set by ptt/tx, cleared by rx */
 volatile int tx_rearm  = 1;      /* re-align the TX mic read on each PTT */
+volatile int am_testtone = 0;    /* AM: modulate an internal 1 kHz tone, not the mic */
 
 static char cons_line[64];
 static int  cons_len;
@@ -1845,7 +1935,7 @@ static void console_exec(char *line)
         else
         {
             if (MODE == MODE_CW) cw_tx_restart();
-            else                 ssb_tx_restart();
+            else                 ssb_tx_restart();  /* also inits the AM carrier osc */
 
             if (mode_is_freedv(MODE) && freedv_ok) freedv_chain_set_tx(1);
 
@@ -1866,6 +1956,12 @@ static void console_exec(char *line)
         if (was_buffered) audio_dma_restart();   /* back to the shallow RX buffer */
         HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_RESET);
         uart_puts("rx\r\n");
+    }
+    else if (str_eq(line, "amtone"))
+    {
+        am_testtone = !am_testtone;
+        uart_puts(am_testtone ? "AM test tone ON (1 kHz, 50%)\r\n"
+                              : "AM test tone off\r\n");
     }
     else if (str_eq(line, "mic"))
     {
