@@ -47,10 +47,12 @@ void  codec2_free(void *ptr)                   { free(ptr); }
 #define OUT_STAGE_LEN    (INTERP_OUT_CHUNK + MAX_BLOCK)
 
 /*
- * Sized for 2400B, whose frames are 1920 samples at 48 kHz rather than the 320
- * that 1600 consumes at 8 kHz.
+ * Two modem frames is enough: the caller's input ring already absorbs the
+ * bursts, so this only has to bridge one demodulator call. Sized for 2400B,
+ * whose frames are 1920 samples at 48 kHz rather than the 320 that 1600
+ * consumes at 8 kHz.
  */
-#define MODEM_FIFO_LEN   8192
+#define MODEM_FIFO_LEN   4096
 #define SPEECH_FIFO_LEN  4096
 
 /*
@@ -293,11 +295,12 @@ static int      out_stage_used;
  * playback off until a few frames have banked fixes that: during the wait we
  * produce without consuming, and the cushion carries steady state afterwards.
  *
- * Re-armed on a real underrun so it recovers rather than limping.
+ * Re-armed on a real underrun so it recovers rather than limping. Sized in
+ * frames rather than samples, because 700D produces 1280 speech samples per
+ * frame against 320 for the other modes.
  */
-#define PREFILL_SAMPLES (3 * 320)   /* 3 frames = 120 ms at 8 kHz */
-
 static int playback_armed;
+static int prefill_samples;
 
 static struct freedv *fdv;
 static struct FIFO   *modem_fifo;   /* 8 kHz modem samples awaiting freedv_rx */
@@ -354,12 +357,20 @@ int freedv_chain_init(int chain_mode)
 
     input_is_48k = (chain_mode == FREEDV_CHAIN_MODE_2400B);
 
-    fdv = freedv_open(input_is_48k ? FREEDV_MODE_2400B : FREEDV_MODE_1600);
+    int m = FREEDV_MODE_1600;
+    if (chain_mode == FREEDV_CHAIN_MODE_2400B) m = FREEDV_MODE_2400B;
+    if (chain_mode == FREEDV_CHAIN_MODE_700D)  m = FREEDV_MODE_700D;
+
+    fdv = freedv_open(m);
     if (fdv == NULL)
         return -1;
 
     if (freedv_get_n_max_modem_samples(fdv) > MAX_MODEM_SAMPLES)
         return -1;
+
+    prefill_samples = 3 * freedv_get_n_speech_samples(fdv);
+    if (prefill_samples > SPEECH_FIFO_LEN / 2)
+        prefill_samples = SPEECH_FIFO_LEN / 2;
 
     /*
      * Squelch on, which here means "output nothing until synced".
@@ -523,7 +534,7 @@ int freedv_chain_get_speech48(float *audio48, int n)
     /* Let a cushion bank up before playing anything; see PREFILL_SAMPLES. */
     if (!playback_armed)
     {
-        if (out_stage_used + codec2_fifo_used(speech_fifo) < PREFILL_SAMPLES)
+        if (out_stage_used + codec2_fifo_used(speech_fifo) < prefill_samples)
         {
             memset(audio48, 0, n * sizeof(float));
             return 0;

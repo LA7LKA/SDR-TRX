@@ -62,9 +62,9 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [664, 304.0]
+    coordinate: [768, 224.0]
     rotation: 0
-    state: enabled
+    state: disabled
 - name: analog_sig_source_x_0
   id: analog_sig_source_x
   parameters:
@@ -201,7 +201,7 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [640, 200.0]
+    coordinate: [656, 56.0]
     rotation: 0
     state: enabled
 - name: blocks_multiply_const_vxx_0
@@ -254,7 +254,7 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [352, 400.0]
+    coordinate: [344, 448.0]
     rotation: 0
     state: enabled
 - name: hilbert_fc_0
@@ -272,9 +272,9 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [704, 448.0]
+    coordinate: [696, 400.0]
     rotation: 0
-    state: disabled
+    state: enabled
 - name: rational_resampler_xxx_0
   id: rational_resampler_xxx
   parameters:
@@ -294,7 +294,7 @@ blocks:
     bus_structure: null
     coordinate: [504, 424.0]
     rotation: 0
-    state: disabled
+    state: enabled
 - name: rational_resampler_xxx_0_0
   id: rational_resampler_xxx
   parameters:
@@ -325,14 +325,14 @@ blocks:
     interleave_frames: '1'
     maxoutbuf: '0'
     minoutbuf: '0'
-    mode: freedv_api.MODE_2400B
+    mode: freedv_api.MODE_700D
     tx_bpf_val: 'True'
     txt_msg: '''GNU Radio'''
   states:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [808, 168.0]
+    coordinate: [816, 24.0]
     rotation: 0
     state: enabled
 

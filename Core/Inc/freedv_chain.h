@@ -17,16 +17,17 @@
  *   - freedv_rx() consumes a varying number of samples per call (clock
  *     tracking), so input is buffered until freedv_nin() is satisfied
  *
- * 1600 is an HF mode carried on SSB and its modem runs at 8 kHz, so the input
- * is decimated 48k -> 8k. 2400B is designed to pass through a commodity FM
- * radio's audio path and its modem runs at 48 kHz natively, so its input goes
- * straight through. Both decode speech at
+ * 1600 and 700D are HF modes carried on SSB and their modems run at 8 kHz, so
+ * the input is decimated 48k -> 8k. 2400B is designed to pass through a
+ * commodity FM radio's audio path and its modem runs at 48 kHz natively, so
+ * its input goes straight through. Both decode speech at
  * 8 kHz, so playback is interpolated back up either way.
  *
  * Returns 0 on success, -1 if codec2 failed to allocate.
  */
 #define FREEDV_CHAIN_MODE_1600   0
 #define FREEDV_CHAIN_MODE_2400B  1
+#define FREEDV_CHAIN_MODE_700D   2
 
 int freedv_chain_init(int chain_mode);
 

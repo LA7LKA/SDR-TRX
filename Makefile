@@ -138,6 +138,7 @@ codec2/build/src/codebooknewamp1_energy.c \
 codec2/build/src/codebooknewamp2.c \
 codec2/build/src/codebooknewamp2_energy.c
 
+C_SOURCES_CODEC2 += codec2/src/codec2_math_arm.c
 C_SOURCES += $(C_SOURCES_CODEC2)
 
 
@@ -243,8 +244,10 @@ CFLAGS += \
 -DFREEDV_MODE_EN_DEFAULT=0 \
 -DFREEDV_MODE_1600_EN=1 \
 -DFREEDV_MODE_2400B_EN=1 \
+-DFREEDV_MODE_700D_EN=1 \
 -DCODEC2_MODE_EN_DEFAULT=0 \
--DCODEC2_MODE_1300_EN=1
+-DCODEC2_MODE_1300_EN=1 \
+-DCODEC2_MODE_700C_EN=1
 
 # __EMBEDDED__ drops the parts of struct MODEM_STATS that only exist to feed a
 # GUI: the scatter plot buffer COMP rx_symbols[320][51] is 130K on its own, and
@@ -271,7 +274,7 @@ CODEC2_OBJECTS = $(addprefix $(BUILD_DIR)/,$(notdir $(C_SOURCES_CODEC2:.c=.o)))
 # steppable, which is worth nothing in a library we are not debugging and costs
 # a lot in a modem that has to keep up with real time. This comes after $(OPT)
 # on the command line, and the last -O wins.
-$(CODEC2_OBJECTS): CFLAGS += -fsingle-precision-constant -O3
+$(CODEC2_OBJECTS): CFLAGS += -fsingle-precision-constant -O3 -D__FPU_PRESENT=1
 
 
 #######################################

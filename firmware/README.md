@@ -11,12 +11,12 @@ Built 2026-07-24 for the **STM32F746** (Nucleo-F746ZG pinout, see `qrp-sdr-trx.i
 
 ## What is in this build
 
-- FreeDV 1600 (HF, on SSB) and FreeDV 2400B (VHF/FM) receive
+- FreeDV 1600 and 700D (HF, on SSB) and FreeDV 2400B (VHF/FM) receive
 - SSB and NBFM receive
-- Starts up in FreeDV 2400B
+- Starts up in FreeDV 700D
 - Telemetry on USART3 / ST-Link VCP, 115200 8N1
 
-99 KB flash, 224 KB RAM.
+227 KB flash, 231 KB RAM.
 
 ## Flashing
 
