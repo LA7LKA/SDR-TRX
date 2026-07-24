@@ -60,13 +60,38 @@ RF --> 45 MHz --> 455 kHz --> 12 kHz --> ADC (48 kHz)
 ```
 
 Up-converting to 45 MHz first puts the image at **f + 90 MHz** for every HF
-band, so a single fixed 30 MHz low-pass on the input kills all images with no
-tracking preselector at all. Single conversion to 455 kHz would put the image
-910 kHz away on 20 m, which is why general-coverage receivers went to
-up-conversion in the first place.
+band — 92 to 118 MHz, far outside anything an HF input filter passes. Single
+conversion to 455 kHz would put the image 910 kHz away on 20 m, needing a
+tracking preselector with an impossible Q, which is why general-coverage
+receivers went to up-conversion in the first place.
 
-Note the input low-pass needs real attenuation at 92–118 MHz, not just a corner
-at 30 MHz — that is where the images land, and FM broadcast lives there.
+#### Band-pass filter bank
+
+Up-conversion's own weakness is that it leaves the front end wideband: without
+a preselector the first mixer sees the entire HF spectrum at once, including
+broadcast stations tens of dB stronger than any amateur signal. Switched
+per-band filters restore selectivity ahead of the mixer, and that is what
+separates a good up-converting receiver from a mediocre one. It also disposes
+of the 92–118 MHz image band thoroughly, since a filter centred on an amateur
+band has enormous attenuation up there.
+
+Six filters cover all ten HF bands, every one with a bandwidth ratio well under
+2:1, so simple 3–5 pole LC sections are enough:
+
+| Filter | Bands | Range |
+| --- | --- | --- |
+| 1 | 160 m | 1.81–2.00 MHz |
+| 2 | 80 m | 3.50–3.80 MHz |
+| 3 | 60 + 40 m | 5.35–7.20 MHz |
+| 4 | 30 + 20 m | 10.10–14.35 MHz |
+| 5 | 17 + 15 m | 18.07–21.45 MHz |
+| 6 | 12 + 10 m | 24.89–29.70 MHz |
+
+Relay switching is preferable to PIN diodes here: the whole point of the filter
+bank is dynamic range, and diode bias current is one more thing that can
+generate intermodulation. At QRP power the same bank can plausibly serve
+transmit harmonic filtering as well, which halves the parts count — worth
+deciding early, since it affects the relay and layout choice.
 
 Three LOs are needed, but **only the first one tunes**:
 
@@ -89,9 +114,11 @@ cheap parts undo the reason for choosing this architecture. A Si5351 is fine to
 get running; a cleaner synthesiser for LO1 is worth it if Mk2 is meant to earn
 its complexity.
 
-LO control belongs behind a thin hardware abstraction so the core stays shared:
-Mk1 implements "set frequency" as a no-op or a single output, Mk2 drives the
-three-LO plan, and the DSP never knows the difference.
+LO control and band selection belong behind one thin hardware abstraction so
+the core stays shared. A single `set frequency` entry point works out which
+band the frequency falls in, selects the filter, and programs LO1; Mk1
+implements it as a no-op or a single output, and the DSP layer never knows the
+difference.
 
 ### DSP
 
@@ -240,8 +267,8 @@ Ready-to-run GNU Radio 3.10 flowgraphs for both are in
 ## Roadmap
 
 - Mk1 minimal front end, so the radio can be built without a PCB
-- Programmable LO (Si5351 on I2C1) plus band/VFO logic, behind a hardware
-  abstraction so Mk1 and Mk2 keep sharing one core
+- Programmable LO (Si5351 on I2C1), switched band-pass filter bank and VFO
+  logic, behind a hardware abstraction so Mk1 and Mk2 keep sharing one core
 - AM (nearly free — complex baseband is already there, AM is `arm_cmplx_mag_f32`)
 - CW with iambic keyer
 - FreeDV 700D for poor HF conditions (needs `codec2_math_arm.c` wired in; CPU is
