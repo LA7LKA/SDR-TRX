@@ -457,7 +457,7 @@ Ready-to-run GNU Radio 3.10 flowgraphs for both are in
 ## Roadmap
 
 - Mk1 minimal front end, so the radio can be built without a PCB
-- Programmable LO (Si5351 on I2C1), switched band-pass filter bank and VFO
+- Programmable LO (AD9851 on I2C1), switched band-pass filter bank and VFO
   logic, behind a hardware abstraction so Mk1 and Mk2 keep sharing one core
 - CW pitch and bandwidth as front panel controls; the filter is a biquad
   cascade rather than a FIR so retuning is five coefficients, not a redesign
