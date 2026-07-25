@@ -148,6 +148,7 @@ volatile uint32_t rx_fdv_cycles_max = 0; // worst-case cycles inside the FreeDV 
 volatile uint32_t rx_adc_cycles = 0;     // TX: worst-case encode cycles
 volatile uint32_t tx_cushion_min = 999999; // TX: smallest DAC lead, in samples
 static   uint32_t last_report = 0;
+static   int      debug_on    = 0;   // continuous telemetry print, off by default
 
 // DWT cycle counter, used to measure how much of each block period the DSP
 // actually consumes. One block is block_size/2 samples at 48 kHz.
@@ -719,15 +720,16 @@ void ssb_process_block(const uint16_t *in, uint16_t *out, int n)
     // ---------------------------------------------------------
     if(MODE == MODE_USB)
     {
-        // USB = I + Q
+        // USB = I - Q  (swapped to match how the sideband lands on the air
+        // after the up-conversion, confirmed against an FT-857D)
         for (int i = 0; i < n; i++)
-            audio_buf[i] = I_buf[i] + Q_buf[i];
+            audio_buf[i] = I_buf[i] - Q_buf[i];
     }
     else if (MODE == MODE_LSB)
     {
-        // LSB = I - Q
+        // LSB = I + Q
         for (int i = 0; i < n; i++)
-            audio_buf[i] = I_buf[i] - Q_buf[i];
+            audio_buf[i] = I_buf[i] + Q_buf[i];
     }
     else if (MODE == MODE_CW)
     {
@@ -1517,7 +1519,9 @@ void ssb_tx_process_block(const uint16_t *in, uint16_t *out, int n)
     arm_biquad_cascade_df1_f32(&ssb_audio, audio, audio, n);
     ssb_hilbert(audio, q, n);
 
-    ssb_modulate(audio, q, out, n, MODE == MODE_LSB);
+    /* USB/LSB swapped vs the phasing convention so the label matches the air,
+       confirmed against an FT-857D. FreeDV keeps the plain USB call below. */
+    ssb_modulate(audio, q, out, n, MODE == MODE_USB);
 }
 
 
@@ -1767,11 +1771,11 @@ void am_tx_process_block(const uint16_t *in, uint16_t *out, int n)
 
         for (int i = 0; i < n; i++)
         {
-            audio[i] = 0.5f * cosf(ph);
+            audio[i] = 0.85f * cosf(ph);   /* ~80%% modulation depth */
             ph += dph;
             if (ph > 2.0f * (float)M_PI) ph -= 2.0f * (float)M_PI;
         }
-        rx_adc_peak = 0.5f;
+        rx_adc_peak = 0.85f;
     }
     else
     {
@@ -1813,9 +1817,9 @@ void am_tx_process_block(const uint16_t *in, uint16_t *out, int n)
         ssb_osc_re = nre * g;
         ssb_osc_im = nim * g;
 
-        /* 900 rather than 1800: full modulation reaches ~2x the carrier, and
-           this keeps the peak inside the DAC swing. */
-        float y = env * carrier * 900.0f + 2048.0f;
+        /* 1000 is about the ceiling: full modulation takes the envelope to ~2x
+           the carrier, so 2 * 1000 fits the 2048 DAC half-swing. */
+        float y = env * carrier * 1000.0f + 2048.0f;
 
         if (y < 0.0f)    y = 0.0f;
         if (y > 4095.0f) y = 4095.0f;
@@ -1886,6 +1890,8 @@ static void console_help(void)
               "  tx            key the CW beacon\r\n"
               "  rx            back to receive\r\n"
               "  mic <n>       microphone gain, 1..200\r\n"
+              "  amtone        toggle AM 1 kHz test tone (50%%)\r\n"
+              "  debug [on|off] toggle continuous telemetry\r\n"
               "  wpm <n>       CW speed\r\n"
               "  stat          current state\r\n");
 }
@@ -1956,6 +1962,13 @@ static void console_exec(char *line)
         if (was_buffered) audio_dma_restart();   /* back to the shallow RX buffer */
         HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_RESET);
         uart_puts("rx\r\n");
+    }
+    else if (str_eq(line, "debug"))
+    {
+        if      (str_eq(arg, "on"))  debug_on = 1;
+        else if (str_eq(arg, "off")) debug_on = 0;
+        else                         debug_on = !debug_on;
+        uart_puts(debug_on ? "debug telemetry ON\r\n" : "debug telemetry off\r\n");
     }
     else if (str_eq(line, "amtone"))
     {
@@ -2285,7 +2298,9 @@ int main(void)
     }
 
     // Once a second: are blocks flowing, is there signal, has the modem synced?
-    if (HAL_GetTick() - last_report >= 1000)
+    // Only when the continuous debug print is enabled -- off by default so the
+    // console prompt stays clean. Toggle with the 'debug' command.
+    if (debug_on && HAL_GetTick() - last_report >= 1000)
     {
         last_report = HAL_GetTick();
 

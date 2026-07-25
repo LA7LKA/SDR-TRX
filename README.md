@@ -12,7 +12,7 @@ Working and tested against live signals:
 
 | Mode | Status | Notes |
 | --- | --- | --- |
-| SSB (USB/LSB) | RX working | Phasing method, Hilbert + complex mixer |
+| SSB (USB/LSB) | RX + TX working | Phasing method; sideband labelled to match the air after up-conversion (checked against an FT-857D) |
 | NBFM | RX working | TX exists but is currently out of the main loop |
 | **FreeDV 1600** | **RX + TX working** | HF, carried on SSB |
 | **FreeDV 2400B** | **RX + TX working** | VHF/10 m, carried on FM |
