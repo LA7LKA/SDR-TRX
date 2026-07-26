@@ -7,55 +7,28 @@ the middle; everything analog hangs off its two IF ports — ADC1 in, DAC2 out �
 and the shared 45 MHz → 12 kHz chain is bidirectional, so the same first mixer
 and 45 MHz crystal filter serve receive and transmit, selected by the T/R switch.
 
-```mermaid
-flowchart LR
-    ANT([Antenna])
-    EXT["Ext. ~1 kW PA<br/>(optional)"]
-    TR{{"T/R switch<br/>PIN diodes · QSK"}}
-    FLT["Band-pass /<br/>TX LPF bank"]
-    LNA["RX LNA<br/>(band-switched)"]
-    PA["Driver + push-pull<br/>RD16HHF1 · 10–20 W"]
-    M1["1st mixer<br/>ADE-1"]
-    XF["45 MHz xtal<br/>filter ±7 kHz"]
-    M2["2nd mixer"]
-    VG["VCA<br/>(AGC)"]
-    LP["Active LP<br/>12 kHz"]
-    LO1["LO1 · AD9851 DDS<br/>variable, sum mixing"]
-    LO2["LO2 · fixed ~44.988 MHz"]
-    MIC([Microphone])
-    AUD([Speaker / phones])
-    subgraph MCU["STM32F746 · software DSP"]
-        A1["ADC1 — RX IF /<br/>DPD feedback"]
-        A2["ADC2 — mic"]
-        A3["ADC3 — ALC / SWR /<br/>temp / current"]
-        D1["DAC1 — audio /<br/>CW sidetone"]
-        D2["DAC2 — TX IF"]
-        PW["PWM → VCA gain"]
-    end
-    ANT --- EXT --- TR
-    TR --- FLT
-    FLT -->|RX| LNA --> M1
-    M1 -->|TX| PA -->|TX| FLT
-    M1 --- XF --- M2
-    LO1 --- M1
-    LO2 --- M2
-    M2 -->|RX| VG --> LP --> A1
-    D2 -->|TX| M2
-    PW --> VG
-    A1 -.->|DSP| D1 --> AUD
-    MIC --> A2
-    A3 -. monitor .- PA
-```
+![Block diagram: antenna through the band-pass/LPF banks, LNA, double conversion via LO1/LO2 to a 12 kHz second IF, the STM32F746ZG DSP core, and the audio and PA/driver paths](diagrams/block-diagram.jpg)
 
-Trace the `RX` edges for receive — antenna → T/R → band filter → LNA → first
-mixer → 45 MHz crystal filter → second mixer → VCA (AGC) → active low-pass →
-ADC1 → DSP → DAC1 → audio — and the `TX` edges for transmit: mic → ADC2 → DSP →
-DAC2 up through the same mixers and filter → driver and push-pull PA → LPF → T/R
-→ antenna, optionally into an external ~1 kW PA. The third ADC monitors ALC, SWR,
-temperature and current; during transmit ADC1 is idle and is reused for
-predistortion feedback, mirroring how DAC1's receive audio path carries the CW
-sidetone on transmit. Both converter reuses fall out of the radio being
-half-duplex.
+For receive, follow the chain up: antenna → RX band-pass bank → LNA → 1st
+mixer (driven by LO1) → 45 MHz crystal filter → 2nd mixer (driven by LO2,
+fixed ~44.988 MHz) → VCA → low-pass amp → ADC → the STM32F746ZG → DAC → output
+low-pass amp → speaker/phones. Transmit runs the same chain in the other
+direction: conditioned mic input → ADC → the STM32F746ZG → DAC → VCA → the
+same two mixers and crystal filter → driver and push-pull PA → TX low-pass
+bank → antenna.
+
+Two things the diagram leaves out on purpose, to keep it readable, and covers
+here instead:
+
+- **T/R switching.** The RX and TX paths share one antenna, switched by PIN
+  diodes rather than a relay, for QSK — see
+  [T/R switching and QSK](#tr-switching-and-qsk) below.
+- **AGC/ALC and monitoring.** The two VCAs shown are one dual part (THAT2162):
+  section 1 is RX AGC, section 2 is TX ALC, both driven by the MCU over PWM. A
+  third ADC (not drawn) scans ALC, SWR, PA temperature and supply current; the
+  RX-IF ADC is reused for DPD feedback during transmit, the same way the
+  receive-audio DAC carries the CW sidetone on transmit — both reuses fall out
+  of the radio being half-duplex.
 
 ## The 12 kHz IF is the interface
 

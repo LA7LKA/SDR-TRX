@@ -9,3 +9,6 @@ firmware/GNURadio/*.py
 
 # Editor config with a machine-local absolute path
 .vscode/
+
+# LibreOffice lock file for open documents
+.~lock.*#
