@@ -1,8 +1,11 @@
 # Build output
-build/
+firmware/build/
 
 # codec2 is a submodule; its own build tree is not ours to track
-codec2/build/
+firmware/codec2/build/
 
 # GRC generates these from the .grc sources
-GNURadio/*.py
+firmware/GNURadio/*.py
+
+# Editor config with a machine-local absolute path
+.vscode/
