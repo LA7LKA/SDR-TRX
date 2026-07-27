@@ -264,9 +264,9 @@ lifetime) or it adds its own IMD to the exciter. QSK also puts a requirement bac
 on the AGC — the receiver has to recover between dits, so CW needs a fast AGC
 recovery mode rather than the slow release that suits ordinary CW.
 
-The exciter feeding this is a **push-pull pair of RD16HHF1** at roughly 10–20 W,
-chosen over the cheaper IRF510 because the IRF510 falls off at 28 MHz and 10 m
-matters. That level is also enough to drive an external ~1 kW solid-state PA,
-where a PIN-diode QSK module (Ameritron QSK-style) does the same job at
-legal-limit power.
+Mk2 is a **pure QRP rig, ~5 W out** — not sized to drive an external amplifier.
+The exciter is an **RD16HHF1**, chosen over the cheaper IRF510 because the
+IRF510 falls off at 28 MHz and 10 m matters; whether it stays push-pull (for
+even-order harmonic cancellation ahead of the TX low-pass bank) or drops to a
+single device now that the higher-power headroom isn't needed is still open.
 

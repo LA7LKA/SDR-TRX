@@ -15,8 +15,11 @@ will run — rather than opening a plain OS serial port.
   needs to get through where SSB voice cannot: DATAC4 decodes at about -4 dB
   SNR against roughly +6 to +10 dB for voice. Unencrypted by design — the
   primary audience is licensed radio amateurs, where encryption is prohibited.
-- **Phone-as-terminal for voice modes too**: mode select, TX, telemetry — the
-  same commands the UART console already exposes.
+- **Phone-as-terminal for voice modes too**: a full menu over mode select, TX,
+  telemetry — the same commands the UART console already exposes. The Nucleo's
+  onboard USB gives a PC/laptop the identical menu over a wired CDC-ACM
+  connection, so the phone (BLE) and a computer (USB) are just two transports
+  for one control surface — see [hardware/README.md](../hardware/README.md).
 
 ## Why not build it in with encryption
 

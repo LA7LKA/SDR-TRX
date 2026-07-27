@@ -192,7 +192,9 @@ Ready-to-run GNU Radio 3.10 flowgraphs for both are in
 - FreeDV TX
 - Full filterbank (FIR/FFT), improved AGC and noise reduction
 - PA control and protection logic
-- CAT control
+- Rotary encoder + minimal front-panel HMI for frequency tuning
+- Full-menu radio control over USB (onboard CDC) and BLE (nRF52840), plus HF
+  text messaging over the FreeDV data modes
 - Waterfall/spectrum display
 
 ### Further out: M17

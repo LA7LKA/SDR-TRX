@@ -39,11 +39,18 @@ One card per block, plus a Nucleo-F746ZG as the MCU/DSP "card":
 | 45 MHz filter | The crystal filter shared by both conversions (roofing + 2nd-conversion image rejection) |
 | 2nd mixer + LO2 | BCM847 2nd mixers (RX and TX), LO2 fixed ~44.988 MHz — a second AD9851, not a crystal or Si5351 |
 | IF | THAT2162 (RX AGC + TX ALC), op-amps, anti-alias/reconstruction LPFs, buffers to ADC1/DAC2 |
-| PA-driver | Driver + push-pull RD16HHF1 |
+| PA-driver | RD16HHF1 exciter, ~5 W out (pure QRP — Mk2 is not sized to drive an external amplifier); push-pull vs. single device still open |
 | LPF | TX low-pass filter bank |
 | PIN T/R | Antenna transmit/receive switch, PIN diodes for QSK |
 | LF | Electret mic preamp → ADC2, LM386 speaker/headphone output from DAC1 — the first card being built, since it is pure audio and testable against the existing firmware with no RF involved |
+| HMI | Rotary encoder (+ minimal display/buttons) for frequency tuning, on the front panel |
 | BLE bridge | nRF52840 (reused USB dongle), bridging a free STM32 UART to the [flutter-app/](../flutter-app/) over Bluetooth Low Energy |
+
+The Nucleo's onboard USB (`USB_OTG_FS`) gives a second, wired control path —
+the same CDC-ACM console already used over the ST-Link VCP, so a PC/laptop
+gets full-menu control with no extra hardware. BLE (phone) and USB (PC) are
+the two transports for the same menu/CAT-style control plus HF text
+messaging; see [flutter-app/](../flutter-app/).
 
 **Both LOs are AD9851, not an AD9851 + a fixed oscillator.** LO2 only needs a
 fixed ~44.988 MHz, but a plain crystal there would need TCXO-grade stability
@@ -59,7 +66,7 @@ trimmed in firmware instead of needing an exact crystal cut.
 
 RX and TX filter banks are separate cards on purpose: RX wants band-pass
 (reject out-of-band and image), TX wants low-pass (reject harmonics), and it
-avoids routing 20 W through the low-loss RX preselector.
+avoids routing TX power through the low-loss RX preselector.
 
 All six HF bands (160–10 m) are the goal, but populated incrementally: 40 m
 and 10 m first to validate the LNA → mixer → IF chain end to end, then the
