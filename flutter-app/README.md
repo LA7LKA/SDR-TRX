@@ -1,9 +1,13 @@
 # Companion app
 
 Not started. A Flutter app that turns a phone into the radio's screen and
-keyboard, connected over Bluetooth serial (an HC-05 on one of the STM32's
-free UARTs — no firmware change needed, since the existing UART console would
-just appear on the phone).
+keyboard, connected over Bluetooth Low Energy to an nRF52840 (a reused USB
+dongle rather than a new part) bridging one of the STM32's free UARTs — see
+[hardware/README.md](../hardware/README.md). No STM32 firmware change is
+needed, since the existing UART console is what comes through the bridge
+either way; unlike a classic-Bluetooth module (e.g. HC-05), the app side talks
+BLE GATT — the Nordic UART Service (NUS), which is what the nRF52840 side
+will run — rather than opening a plain OS serial port.
 
 ## Planned scope
 

@@ -137,11 +137,17 @@ ADE-1 diode ring mixer, and better close-in phase noise than a fractional-N part
 That matters because **LO1 phase noise sets close-in dynamic range** — its noise
 sidebands reciprocal-mix strong nearby signals straight into the IF, and on a
 crowded band that, not the roofing filter, is the limit. It is the one place where
-a cheap part would undo the reason for the whole architecture. LO2 is fixed, so a
-crystal oscillator or a single Si5351 output does fine there. The AD9851 needs an
-MMIC buffer to reach the +7 dBm the ADE-1 wants (its output is around 0 dBm), and
-its known weakness is spurs — birdies that move with tuning — mitigated, though
-not erased, by the band-pass bank.
+a cheap part would undo the reason for the whole architecture. LO2 is fixed, but
+it is a **second AD9851** rather than a plain crystal or a Si5351: LO2 drift maps
+1:1 onto the 12 kHz IF centre, so a garden-variety crystal there would need
+TCXO-grade stability anyway, and a custom-frequency TCXO at an oddball
+44.988 MHz is a slow, low-volume special order. A second AD9851 reuses LO1's
+buffer amp, filter and driver code, and — the real win — lets both DDS chips
+share one reference oscillator, so the whole radio needs only one precision
+reference, at a standard frequency, rather than hunting down two. Each AD9851
+needs an MMIC buffer to reach the +7 dBm the ADE-1 wants (its output is around
+0 dBm), and its known weakness is spurs — birdies that move with tuning —
+mitigated, though not erased, by the band-pass bank.
 
 LO control and band selection belong behind one thin hardware abstraction so
 the core stays shared. A single `set frequency` entry point works out which

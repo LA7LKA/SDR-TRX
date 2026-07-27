@@ -37,12 +37,25 @@ One card per block, plus a Nucleo-F746ZG as the MCU/DSP "card":
 | 1st mixer | ADE-1, shared bidirectional 1st mixer (RF ↔ 45 MHz) |
 | LO1 | AD9851 DDS, variable, isolated from the front end on its own card |
 | 45 MHz filter | The crystal filter shared by both conversions (roofing + 2nd-conversion image rejection) |
-| 2nd mixer + LO2 | BCM847 2nd mixers (RX and TX), LO2 fixed ~44.988 MHz |
+| 2nd mixer + LO2 | BCM847 2nd mixers (RX and TX), LO2 fixed ~44.988 MHz — a second AD9851, not a crystal or Si5351 |
 | IF | THAT2162 (RX AGC + TX ALC), op-amps, anti-alias/reconstruction LPFs, buffers to ADC1/DAC2 |
 | PA-driver | Driver + push-pull RD16HHF1 |
 | LPF | TX low-pass filter bank |
 | PIN T/R | Antenna transmit/receive switch, PIN diodes for QSK |
 | LF | Electret mic preamp → ADC2, LM386 speaker/headphone output from DAC1 — the first card being built, since it is pure audio and testable against the existing firmware with no RF involved |
+| BLE bridge | nRF52840 (reused USB dongle), bridging a free STM32 UART to the [flutter-app/](../flutter-app/) over Bluetooth Low Energy |
+
+**Both LOs are AD9851, not an AD9851 + a fixed oscillator.** LO2 only needs a
+fixed ~44.988 MHz, but a plain crystal there would need TCXO-grade stability
+anyway — LO2 drift maps 1:1 onto the 12 kHz IF centre, and a garden-variety
+±20–50 ppm crystal at 45 MHz can drift over 1 kHz across temperature, a real
+bite out of a 14 kHz roofing filter. A custom-frequency TCXO to fix that is a
+low-volume special order (MOQ, weeks of lead time) for an oddball 44.988 MHz.
+A second AD9851 instead reuses the LO1 card's buffer amp, LPF and driver code
+nearly unchanged, and — the actual win — lets both DDS chips share **one**
+reference oscillator, so the whole radio needs only one precision reference,
+at a standard frequency, rather than two. LO2's exact output can then be
+trimmed in firmware instead of needing an exact crystal cut.
 
 RX and TX filter banks are separate cards on purpose: RX wants band-pass
 (reject out-of-band and image), TX wants low-pass (reject harmonics), and it
