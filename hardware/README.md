@@ -41,6 +41,7 @@ One card per block, plus a Nucleo-F746ZG as the MCU/DSP "card":
 | IF | THAT2162 (RX AGC + TX ALC), op-amps, anti-alias/reconstruction LPFs, buffers to ADC1/DAC2 |
 | PA-driver | RD16HHF1 exciter, ~5 W out (pure QRP — Mk2 is not sized to drive an external amplifier); push-pull vs. single device still open |
 | LPF | TX low-pass filter bank |
+| SWR bridge | Directional coupler (fwd/rev), feeding ADC3's control scan for PA protection/foldback |
 | PIN T/R | Antenna transmit/receive switch, PIN diodes for QSK |
 | LF | Electret mic preamp → ADC2, LM386 speaker/headphone output from DAC1 — the first card being built, since it is pure audio and testable against the existing firmware with no RF involved |
 | HMI | Rotary encoder (+ minimal display/buttons) for frequency tuning, on the front panel |
@@ -67,6 +68,14 @@ trimmed in firmware instead of needing an exact crystal cut.
 RX and TX filter banks are separate cards on purpose: RX wants band-pass
 (reject out-of-band and image), TX wants low-pass (reject harmonics), and it
 avoids routing TX power through the low-loss RX preselector.
+
+**5 W keeps the TX-power-carrying cards cheap and small, not just the PA.**
+RMS current into 50 Ω drops from ~0.63 A at 20 W to ~0.32 A at 5 W, and RMS
+voltage from ~32 V to ~16 V — thinner wire and smaller, lower-saturation-risk
+toroids in the LPF bank across all six bands, lower-voltage-rated capacitors,
+and a simpler SWR bridge (a couple of small binocular cores, resistors and
+diodes is enough at QRP power — the classic homebrew directional coupler,
+no real power handling to design around).
 
 All six HF bands (160–10 m) are the goal, but populated incrementally: 40 m
 and 10 m first to validate the LNA → mixer → IF chain end to end, then the
