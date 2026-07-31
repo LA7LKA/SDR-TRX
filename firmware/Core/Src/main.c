@@ -90,11 +90,15 @@ ETH_DMADescTypeDef DMATxDscrTab[ETH_TX_DESC_CNT] __attribute__((section(".TxDecr
 
 ETH_TxPacketConfig TxConfig;
 
-ADC_HandleTypeDef hadc1;
+ADC_HandleTypeDef hadc1;   /* RX: IF in, PC0 */
 DMA_HandleTypeDef hdma_adc1;
 
+ADC_HandleTypeDef hadc2;   /* TX: mic in, PA3 */
+DMA_HandleTypeDef hdma_adc2;
+
 DAC_HandleTypeDef hdac;
-DMA_HandleTypeDef hdma_dac1;
+DMA_HandleTypeDef hdma_dac1;   /* RX: audio out, PA4 (DAC_OUT1) */
+DMA_HandleTypeDef hdma_dac2;   /* TX: IF out, PA5 (DAC_OUT2) */
 
 ETH_HandleTypeDef heth;
 
@@ -349,6 +353,7 @@ static void MX_USB_OTG_FS_PCD_Init(void);
 static void MX_DAC_Init(void);
 static void MX_TIM6_Init(void);
 static void MX_ADC1_Init(void);
+static void MX_ADC2_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -422,17 +427,25 @@ volatile uint32_t rx_overruns = 0;
  * Read position into the ADC ring. The DMA controller is the writer and its
  * position is the transfer counter, so nothing has to be tracked in an ISR.
  * The ring is a whole number of blocks, so a block read never wraps.
+ *
+ * Half duplex, so exactly one ADC and one DAC channel is ever running:
+ * hadc1/DAC_OUT1 (IF in / audio out) on RX, hadc2/DAC_OUT2 (mic in / IF out)
+ * on TX. tx_active picks which pair's DMA position is live.
  */
+extern volatile int tx_active;
+
 static uint32_t adc_rd;
 
 static uint32_t adc_dma_pos(void)
 {
-    return ADC_RING_LEN - __HAL_DMA_GET_COUNTER(hadc1.DMA_Handle);
+    ADC_HandleTypeDef *adc = tx_active ? &hadc2 : &hadc1;
+    return ADC_RING_LEN - __HAL_DMA_GET_COUNTER(adc->DMA_Handle);
 }
 
 static uint32_t dac_dma_pos(void)
 {
-    return DAC_RING_LEN - __HAL_DMA_GET_COUNTER(hdac.DMA_Handle1);
+    DMA_HandleTypeDef *dma = tx_active ? hdac.DMA_Handle2 : hdac.DMA_Handle1;
+    return DAC_RING_LEN - __HAL_DMA_GET_COUNTER(dma);
 }
 
 static uint32_t adc_avail(void)
@@ -474,6 +487,21 @@ void HAL_DAC_ConvCpltCallbackCh1(DAC_HandleTypeDef *hdac)
 {
     // DAC conversion complete callback (channel 1)
     // You can add code here if needed
+    dac_block_processing = 2;
+}
+
+/*
+ * Channel 2 (TX IF out) mirrors channel 1: dac_block_processing is what
+ * paces tx_process_block() in the main loop, and on TX it is channel 2 that
+ * is actually running the DMA, not channel 1.
+ */
+void HAL_DACEx_ConvHalfCpltCallbackCh2(DAC_HandleTypeDef *hdac)
+{
+    dac_block_processing = 1;
+}
+
+void HAL_DACEx_ConvCpltCallbackCh2(DAC_HandleTypeDef *hdac)
+{
     dac_block_processing = 2;
 }
 
@@ -1015,10 +1043,20 @@ static void dsp_filters_init(void)
 static void audio_dma_restart(void)
 {
     HAL_ADC_Stop_DMA(&hadc1);
+    HAL_ADC_Stop_DMA(&hadc2);
     HAL_DAC_Stop_DMA(&hdac, DAC_CHANNEL_1);
+    HAL_DAC_Stop_DMA(&hdac, DAC_CHANNEL_2);
     audio_dma_start();
 }
 
+/*
+ * Half duplex: exactly one ADC and one DAC channel run at a time, chosen by
+ * tx_active. RX reads IF off hadc1 (PC0) and writes demodulated audio to
+ * DAC_OUT1 (PA4). TX reads the mic off hadc2 (PA3) and writes modulated IF
+ * to DAC_OUT2 (PA5). adc_buffer/dac_buffer stay the generic "current input/
+ * output" pair either way -- the DSP code does not need to know which side
+ * is live.
+ */
 static void audio_dma_start(void)
 {
     for (uint32_t i = 0; i < DAC_RING_LEN; i++)
@@ -1033,10 +1071,18 @@ static void audio_dma_start(void)
 
     uint32_t dac_len = (tx_active && mode_is_buffered(MODE)) ? DAC_RING_LEN
                                                              : block_size;
+    uint32_t adc_len = mode_is_buffered(MODE) ? ADC_RING_LEN : block_size;
 
-    HAL_DAC_Start_DMA(&hdac, DAC_CHANNEL_1, (uint32_t *)dac_buffer, dac_len, DAC_ALIGN_12B_R);
-    HAL_ADC_Start_DMA(&hadc1, (uint32_t *)adc_buffer,
-                      mode_is_buffered(MODE) ? ADC_RING_LEN : block_size);
+    if (tx_active)
+    {
+        HAL_DAC_Start_DMA(&hdac, DAC_CHANNEL_2, (uint32_t *)dac_buffer, dac_len, DAC_ALIGN_12B_R);
+        HAL_ADC_Start_DMA(&hadc2, (uint32_t *)adc_buffer, adc_len);
+    }
+    else
+    {
+        HAL_DAC_Start_DMA(&hdac, DAC_CHANNEL_1, (uint32_t *)dac_buffer, dac_len, DAC_ALIGN_12B_R);
+        HAL_ADC_Start_DMA(&hadc1, (uint32_t *)adc_buffer, adc_len);
+    }
 }
 
 /*
@@ -1121,7 +1167,9 @@ void radio_set_mode(int mode)
         return;
 
     HAL_ADC_Stop_DMA(&hadc1);
+    HAL_ADC_Stop_DMA(&hadc2);
     HAL_DAC_Stop_DMA(&hdac, DAC_CHANNEL_1);
+    HAL_DAC_Stop_DMA(&hdac, DAC_CHANNEL_2);
 
     MODE       = mode;
     block_size = want;
@@ -1947,7 +1995,7 @@ static void console_exec(char *line)
 
             tx_rearm  = 1;
             tx_active = 1;
-            if (mode_is_buffered(MODE)) audio_dma_restart();  /* deep DAC ring */
+            audio_dma_restart();  /* mic-in ADC / IF-out DAC, deep ring if buffered */
             HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_SET);
             uart_puts("tx: ");
             uart_puts(mode_name(MODE));
@@ -1956,10 +2004,9 @@ static void console_exec(char *line)
     }
     else if (str_eq(line, "rx"))
     {
-        int was_buffered = mode_is_buffered(MODE);
         tx_active = 0;
         if (mode_is_freedv(MODE) && freedv_ok) freedv_chain_set_tx(0);
-        if (was_buffered) audio_dma_restart();   /* back to the shallow RX buffer */
+        audio_dma_restart();   /* back to IF-in ADC / audio-out DAC */
         HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_RESET);
         uart_puts("rx\r\n");
     }
@@ -2139,6 +2186,7 @@ int main(void)
   MX_DAC_Init();
   MX_TIM6_Init();
   MX_ADC1_Init();
+  MX_ADC2_Init();
   /* USER CODE BEGIN 2 */
 
   dsp_filters_init();
@@ -2461,8 +2509,11 @@ static void MX_ADC1_Init(void)
   }
 
   /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  * RX IF in, PC0 (ADC123_IN10). Was PA3/channel 3 when this ADC also stood
+  * in for the mic; the mic moved to ADC2 below so the two directions no
+  * longer share a channel.
   */
-  sConfig.Channel = ADC_CHANNEL_3;
+  sConfig.Channel = ADC_CHANNEL_10;
   sConfig.Rank = ADC_REGULAR_RANK_1;
   sConfig.SamplingTime = ADC_SAMPLETIME_3CYCLES;
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
@@ -2473,6 +2524,41 @@ static void MX_ADC1_Init(void)
 
   /* USER CODE END ADC1_Init 2 */
 
+}
+
+/**
+  * @brief ADC2 Initialization Function -- TX mic in, PA3 (ADC123_IN3).
+  * @param None
+  * @retval None
+  */
+static void MX_ADC2_Init(void)
+{
+  ADC_ChannelConfTypeDef sConfig = {0};
+
+  hadc2.Instance = ADC2;
+  hadc2.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
+  hadc2.Init.Resolution = ADC_RESOLUTION_12B;
+  hadc2.Init.ScanConvMode = ADC_SCAN_DISABLE;
+  hadc2.Init.ContinuousConvMode = DISABLE;
+  hadc2.Init.DiscontinuousConvMode = DISABLE;
+  hadc2.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_RISING;
+  hadc2.Init.ExternalTrigConv = ADC_EXTERNALTRIGCONV_T6_TRGO;
+  hadc2.Init.DataAlign = ADC_DATAALIGN_RIGHT;
+  hadc2.Init.NbrOfConversion = 1;
+  hadc2.Init.DMAContinuousRequests = ENABLE;
+  hadc2.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
+  if (HAL_ADC_Init(&hadc2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  sConfig.Channel = ADC_CHANNEL_3;
+  sConfig.Rank = ADC_REGULAR_RANK_1;
+  sConfig.SamplingTime = ADC_SAMPLETIME_3CYCLES;
+  if (HAL_ADC_ConfigChannel(&hadc2, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
 }
 
 /**
@@ -2501,11 +2587,18 @@ static void MX_DAC_Init(void)
     Error_Handler();
   }
 
-  /** DAC channel OUT1 config
+  /** DAC channel OUT1 config -- RX audio out, PA4
   */
   sConfig.DAC_Trigger = DAC_TRIGGER_T6_TRGO;
   sConfig.DAC_OutputBuffer = DAC_OUTPUTBUFFER_ENABLE;
   if (HAL_DAC_ConfigChannel(&hdac, &sConfig, DAC_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** DAC channel OUT2 config -- TX IF out, PA5
+  */
+  if (HAL_DAC_ConfigChannel(&hdac, &sConfig, DAC_CHANNEL_2) != HAL_OK)
   {
     Error_Handler();
   }
@@ -2734,9 +2827,15 @@ static void MX_DMA_Init(void)
   /* DMA1_Stream5_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA1_Stream5_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA1_Stream5_IRQn);
+  /* DMA1_Stream6_IRQn interrupt configuration (DAC channel 2, TX IF out) */
+  HAL_NVIC_SetPriority(DMA1_Stream6_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Stream6_IRQn);
   /* DMA2_Stream0_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA2_Stream0_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA2_Stream0_IRQn);
+  /* DMA2_Stream2_IRQn interrupt configuration (ADC2, TX mic in) */
+  HAL_NVIC_SetPriority(DMA2_Stream2_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA2_Stream2_IRQn);
 
 }
 

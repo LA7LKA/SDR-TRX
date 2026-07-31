@@ -30,6 +30,14 @@ here instead:
   receive-audio DAC carries the CW sidetone on transmit — both reuses fall out
   of the radio being half-duplex.
 
+The full converter map, now implemented in firmware (`firmware/Core/Src/main.c`)
+rather than just designed: **ADC1/PC0 = RX IF in, DAC_OUT2/PA5 = TX IF out**
+(the two IF ports the diagram shows); **ADC2/PA3 = TX mic in, DAC_OUT1/PA4 =
+RX audio out** (the LF audio card's two ports). Half duplex, so exactly one
+ADC and one DAC channel run at a time — `tx_active` picks the pair, switched
+on every PTT transition. Bench-verified on the Nucleo-F746ZG prototype
+2026-08-01.
+
 ## The 12 kHz IF is the interface
 
 The firmware ingests **one real ADC channel carrying a 12 kHz IF**, and does
