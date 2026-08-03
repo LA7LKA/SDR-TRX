@@ -27,7 +27,12 @@
 #include "arm_math.h"       // <-- CMSIS-DSP
 #include "dsp.h"            // <-- dine DSP-typer
 #include "freedv_chain.h"   // <-- FreeDV 1600 RX-kjede
+#include "oled.h"
+#include "encoder.h"
+#include "buttons.h"
+#include "hmi.h"
 #include <math.h>
+#include <stdio.h>
 
 /* USER CODE END Includes */
 
@@ -134,6 +139,16 @@ PCD_HandleTypeDef hpcd_USB_OTG_FS;
 
 uint16_t dac_buffer[DAC_RING_LEN] = {0};
 uint16_t adc_buffer[ADC_RING_LEN] = {0};
+
+// CW sidetone: DAC_OUT1/PA4 (the RX speaker output) doubles as the TX
+// sidetone during CW, same as [[cw-design-decisions]] always intended -
+// keying is heard through the speaker/phones while DAC_OUT2 carries the
+// actual IF out. Only driven (DMA started) when tx_active && MODE_CW; see
+// audio_dma_start(). Sized for CW's block size, not the deep DAC_RING_LEN
+// ring - CW is always the shallow non-buffered path (mode_cfg[MODE_CW] is
+// BLOCK_SIZE_ANALOG, buffered=0), so anything bigger is just wasted static
+// RAM, at exactly the size that matters for the heap FreeDV 700D needs.
+uint16_t sidetone_buffer[BLOCK_SIZE_ANALOG] = {0};
 
 volatile uint8_t block_ready = 0; // 0: no block ready, 1: first half ready, 2: second half ready
 volatile uint8_t dac_block_processing = 0; // 0: not processing, 1: processing
@@ -303,35 +318,74 @@ static float dsp_scratch[10 * SCRATCH_N];
  * Biquads rather than a FIR because pitch and bandwidth are meant to become
  * front panel controls. Retuning this is five coefficients; a FIR with the
  * same skirts would be hundreds of taps to redesign on every turn of a knob.
+ * cw_bpf_retune() below is that front-panel-control path, wired up 2026-08-03.
  *
  * Each section is deliberately wider than the target: cascading three narrows
  * the result, so Q 1.42 per section gives about 250 Hz overall. Going much
  * below that starts to ring and smears the elements at speed, which reads
  * worse than a wider filter.
  */
-#define CW_PITCH_HZ   700.0f
+#define CW_PITCH_DEFAULT_HZ  700.0f
+#define CW_PITCH_MIN_HZ      300.0f
+#define CW_PITCH_MAX_HZ     1000.0f
+#define CW_FILTER_Q           1.42f
 #define CW_STAGES     3
 
-static const float cw_coeffs[5 * CW_STAGES] = {
-    +3.1213224677e-02f,
-    +0.0000000000e+00f,
-    -3.1213224677e-02f,
-    +1.9294452893e+00f,
-    -9.3757355065e-01f,
-    +3.1213224677e-02f,
-    +0.0000000000e+00f,
-    -3.1213224677e-02f,
-    +1.9294452893e+00f,
-    -9.3757355065e-01f,
-    +3.1213224677e-02f,
-    +0.0000000000e+00f,
-    -3.1213224677e-02f,
-    +1.9294452893e+00f,
-    -9.3757355065e-01f
-};
+// Runtime pitch: also what the TX carrier offsets from the IF centre by
+// (see cw_tx_restart()), so RX filter and TX sidetone stay one linked
+// setting rather than drifting apart - the design principle from
+// [[cw-design-decisions]].
+float cw_pitch_hz = CW_PITCH_DEFAULT_HZ;
+
+// CMSIS's biquad init stores the pointer it's given rather than copying, so
+// this has to be static storage, not a stack buffer computed on the fly.
+static float cw_coeffs_runtime[5 * CW_STAGES];
 
 arm_biquad_casd_df1_inst_f32 cw_bpf;
 static float cw_state[4 * CW_STAGES];
+
+/*
+ * (Re)design the CW band-pass filter for a new centre frequency, RBJ
+ * "constant skirt gain" band-pass biquad, reverse-derived to match this
+ * project's original fixed-700 Hz coefficients (Q 1.42, confirmed by
+ * working backward from them to within rounding). Same 5 coefficients in
+ * all three cascaded stages, same as the fixed table this replaces.
+ */
+static void cw_bpf_retune(float pitch_hz)
+{
+    float w0    = TWO_PI * pitch_hz / 48000.0f;
+    float alpha = sinf(w0) / (2.0f * CW_FILTER_Q);
+    float a0    = 1.0f + alpha;
+    float cosw0 = cosf(w0);
+
+    float b0 =  alpha / a0;
+    float b2 = -alpha / a0;
+    float a1 =  (2.0f * cosw0) / a0;   /* CMSIS df1 sign convention */
+    float a2 = -(1.0f - alpha) / a0;
+
+    for (int s = 0; s < CW_STAGES; s++)
+    {
+        cw_coeffs_runtime[5*s + 0] = b0;
+        cw_coeffs_runtime[5*s + 1] = 0.0f;
+        cw_coeffs_runtime[5*s + 2] = b2;
+        cw_coeffs_runtime[5*s + 3] = a1;
+        cw_coeffs_runtime[5*s + 4] = a2;
+    }
+
+    arm_biquad_cascade_df1_init_f32(&cw_bpf, CW_STAGES, cw_coeffs_runtime, cw_state);
+}
+
+/* Clamp and apply a new CW pitch - called from the HMI (Function -> CW
+   pitch -> encoder) and available for the console later if wanted. Retunes
+   immediately regardless of MODE; harmless when not in CW, since cw_bpf
+   just sits unused until MODE_CW reads it. */
+void cw_set_pitch(float hz)
+{
+    if (hz < CW_PITCH_MIN_HZ) hz = CW_PITCH_MIN_HZ;
+    if (hz > CW_PITCH_MAX_HZ) hz = CW_PITCH_MAX_HZ;
+    cw_pitch_hz = hz;
+    cw_bpf_retune(cw_pitch_hz);
+}
 
 arm_fir_instance_f32 pre_fm_I;
 arm_fir_instance_f32 pre_fm_Q;
@@ -1025,8 +1079,7 @@ static void dsp_filters_init(void)
 
     ssb_tx_init();
 
-    arm_biquad_cascade_df1_init_f32(&cw_bpf, CW_STAGES,
-                                    (float *)cw_coeffs, cw_state);
+    cw_bpf_retune(cw_pitch_hz);   /* re-apply the current pitch, not the 700 Hz default */
 
     // Hilbert for SSB
     arm_fir_init_f32(&hilbert,
@@ -1050,17 +1103,24 @@ static void audio_dma_restart(void)
 }
 
 /*
- * Half duplex: exactly one ADC and one DAC channel run at a time, chosen by
- * tx_active. RX reads IF off hadc1 (PC0) and writes demodulated audio to
- * DAC_OUT1 (PA4). TX reads the mic off hadc2 (PA3) and writes modulated IF
- * to DAC_OUT2 (PA5). adc_buffer/dac_buffer stay the generic "current input/
- * output" pair either way -- the DSP code does not need to know which side
- * is live.
+ * Half duplex: exactly one ADC and DAC_OUT2/DAC_OUT1 pair carries the
+ * "live" signal at a time, chosen by tx_active. RX reads IF off hadc1 (PC0)
+ * and writes demodulated audio to DAC_OUT1 (PA4). TX reads the mic off
+ * hadc2 (PA3) and writes modulated IF to DAC_OUT2 (PA5). adc_buffer/
+ * dac_buffer stay the generic "current input/output" pair either way -- the
+ * DSP code does not need to know which side is live.
+ *
+ * One exception: DAC_OUT1 also keeps running during CW TX, carrying the
+ * sidetone (see cw_tx_process_block()) so keying is heard through the
+ * speaker/phones the same as [[cw-design-decisions]] always intended.
  */
 static void audio_dma_start(void)
 {
     for (uint32_t i = 0; i < DAC_RING_LEN; i++)
         dac_buffer[i] = DAC_MID;
+
+    for (uint32_t i = 0; i < BLOCK_SIZE_ANALOG; i++)
+        sidetone_buffer[i] = DAC_MID;
 
     memset(adc_buffer, 0, sizeof(adc_buffer));
 
@@ -1076,6 +1136,8 @@ static void audio_dma_start(void)
     if (tx_active)
     {
         HAL_DAC_Start_DMA(&hdac, DAC_CHANNEL_2, (uint32_t *)dac_buffer, dac_len, DAC_ALIGN_12B_R);
+        if (MODE == MODE_CW)
+            HAL_DAC_Start_DMA(&hdac, DAC_CHANNEL_1, (uint32_t *)sidetone_buffer, dac_len, DAC_ALIGN_12B_R);
         HAL_ADC_Start_DMA(&hadc2, (uint32_t *)adc_buffer, adc_len);
     }
     else
@@ -1138,6 +1200,7 @@ int      mode_is_freedv(int mode) { return cfg_for(mode)->chain_mode >= 0; }
 int      chain_mode_for(int mode) { return cfg_for(mode)->chain_mode; }
 int      mode_is_buffered(int mode) { return cfg_for(mode)->buffered; }
 const char *mode_name(int mode)   { return cfg_for(mode)->name; }
+int      mode_count(void)         { return MODE_COUNT; }
 
 /*
  * Largest block malloc() can still hand out. codec2 allocates its modem state
@@ -1577,7 +1640,7 @@ void ssb_tx_process_block(const uint16_t *in, uint16_t *out, int n)
  * CW transmit
  *
  * Sends a beacon at the IF the receiver is tuned to. The carrier sits at
- * CW_PITCH_HZ above the IF centre, which is the same offset the receive
+ * cw_pitch_hz above the IF centre, which is the same offset the receive
  * filter is centred on: a station whose carrier gives us a 700 Hz tone is on
  * the frequency we have to answer on, so transmit has to land in the same
  * place.
@@ -1588,7 +1651,7 @@ void ssb_tx_process_block(const uint16_t *in, uint16_t *out, int n)
  * milliseconds long.
  * --------------------------------------------------------------------- */
 
-#define CW_MSG      "CQ CQ CQ DE LA7LKA"
+#define CW_MSG      "LB2S DE LA7LKA"
 #define CW_UNITS    256                     /* dit units in the keyed message */
 #define CW_RAMP     240                     /* 5 ms edge at 48 kHz */
 
@@ -1625,6 +1688,11 @@ static int      cw_ramp;            /* position within an edge */
 
 static float    cw_osc_re = 1.0f, cw_osc_im = 0.0f;
 static float    cw_step_re, cw_step_im;
+
+/* Sidetone oscillator: same envelope, but at cw_pitch_hz alone (no +12000 IF
+   offset) since this drives the speaker directly, not an IF stage. */
+static float    cw_side_re = 1.0f, cw_side_im = 0.0f;
+static float    cw_side_step_re, cw_side_step_im;
 
 static void cw_build_message(void)
 {
@@ -1672,16 +1740,24 @@ void cw_tx_restart(void)
     cw_env  = 0.0f;
     cw_ramp = 0;
 
-    /* Carrier at the IF centre plus the tone pitch, same as receive expects. */
-    float dphi = 2.0f * (float)M_PI * (12000.0f + CW_PITCH_HZ) / 48000.0f;
+    /* Carrier at the IF centre plus the tone pitch, same as receive expects.
+       Runtime cw_pitch_hz, not the old fixed CW_PITCH_HZ, so a pitch change
+       moves the TX carrier and the RX filter together. */
+    float dphi = 2.0f * (float)M_PI * (12000.0f + cw_pitch_hz) / 48000.0f;
 
     cw_step_re = cosf(dphi);
     cw_step_im = sinf(dphi);
     cw_osc_re  = 1.0f;
     cw_osc_im  = 0.0f;
+
+    float dphi_side = 2.0f * (float)M_PI * cw_pitch_hz / 48000.0f;
+    cw_side_step_re = cosf(dphi_side);
+    cw_side_step_im = sinf(dphi_side);
+    cw_side_re = 1.0f;
+    cw_side_im = 0.0f;
 }
 
-void cw_tx_process_block(uint16_t *out, int n)
+void cw_tx_process_block(uint16_t *out, uint16_t *side_out, int n)
 {
     for (int i = 0; i < n; i++)
     {
@@ -1712,6 +1788,23 @@ void cw_tx_process_block(uint16_t *out, int n)
         if (y > 4095.0f) y = 4095.0f;
 
         out[i] = (uint16_t)y;
+
+        /* Same envelope, same edge timing, just at the audio pitch instead
+           of the IF carrier - so sidetone keying matches the actual
+           transmitted envelope exactly, not a separately-timed copy. */
+        float ys = cw_env * cw_side_re * 1800.0f + 2048.0f;
+
+        float snre = cw_side_re * cw_side_step_re - cw_side_im * cw_side_step_im;
+        float snim = cw_side_re * cw_side_step_im + cw_side_im * cw_side_step_re;
+        float sg   = 1.5f - 0.5f * (snre * snre + snim * snim);
+
+        cw_side_re = snre * sg;
+        cw_side_im = snim * sg;
+
+        if (ys < 0.0f)    ys = 0.0f;
+        if (ys > 4095.0f) ys = 4095.0f;
+
+        side_out[i] = (uint16_t)ys;
     }
 }
 
@@ -1880,11 +1973,13 @@ void am_tx_process_block(const uint16_t *in, uint16_t *out, int n)
 
 /*
  * Transmit dispatch. CW keys its own carrier and takes no input; the voice
- * modes modulate whatever is on the microphone ADC.
+ * modes modulate whatever is on the microphone ADC. side_out is the CW
+ * sidetone buffer - only CW writes it, since it's the only TX mode DAC1
+ * stays running for (see audio_dma_start()).
  */
-static void tx_process_block(const uint16_t *in, uint16_t *out, int n)
+static void tx_process_block(const uint16_t *in, uint16_t *out, uint16_t *side_out, int n)
 {
-    if (MODE == MODE_CW)                            cw_tx_process_block(out, n);
+    if (MODE == MODE_CW)                            cw_tx_process_block(out, side_out, n);
     else if (MODE == MODE_USB || MODE == MODE_LSB)  ssb_tx_process_block(in, out, n);
     else if (MODE == MODE_NBFM)                     nbfm_tx_process_block(in, out, n);
     else if (MODE == MODE_AM)                       am_tx_process_block(in, out, n);
@@ -1898,6 +1993,38 @@ static int tx_supported(int mode)
 {
     return mode == MODE_CW || mode == MODE_USB || mode == MODE_LSB
         || mode == MODE_NBFM || mode == MODE_AM || mode_is_freedv(mode);
+}
+
+/*
+ * Shared by the console's tx/rx commands and the HMI's PTT input (hmi.c),
+ * so both paths key the radio exactly the same way rather than risking the
+ * two drifting apart. Returns 0 if the current mode has no modulator yet.
+ */
+extern volatile int tx_rearm;
+
+int radio_tx_on(void)
+{
+    if (!tx_supported(MODE))
+        return 0;
+
+    if (MODE == MODE_CW) cw_tx_restart();
+    else                 ssb_tx_restart();  /* also inits the AM carrier osc */
+
+    if (mode_is_freedv(MODE) && freedv_ok) freedv_chain_set_tx(1);
+
+    tx_rearm  = 1;
+    tx_active = 1;
+    audio_dma_restart();  /* mic-in ADC / IF-out DAC, deep ring if buffered */
+    HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_SET);
+    return 1;
+}
+
+void radio_tx_off(void)
+{
+    tx_active = 0;
+    if (mode_is_freedv(MODE) && freedv_ok) freedv_chain_set_tx(0);
+    audio_dma_restart();   /* back to IF-in ADC / audio-out DAC */
+    HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_RESET);
 }
 
 /* ------------------------------------------------------------------------
@@ -1941,7 +2068,9 @@ static void console_help(void)
               "  amtone        toggle AM 1 kHz test tone (50%%)\r\n"
               "  debug [on|off] toggle continuous telemetry\r\n"
               "  wpm <n>       CW speed\r\n"
-              "  stat          current state\r\n");
+              "  stat          current state\r\n"
+              "  enc           encoder pin levels + count (HMI bring-up)\r\n"
+              "  btn           button states 1..10, '1'=pressed (HMI bring-up)\r\n");
 }
 
 static void console_modes(void)
@@ -1982,21 +2111,12 @@ static void console_exec(char *line)
     }
     else if (str_eq(line, "tx"))
     {
-        if (!tx_supported(MODE))
+        if (!radio_tx_on())
         {
             uart_puts("no modulator for this mode yet\r\n");
         }
         else
         {
-            if (MODE == MODE_CW) cw_tx_restart();
-            else                 ssb_tx_restart();  /* also inits the AM carrier osc */
-
-            if (mode_is_freedv(MODE) && freedv_ok) freedv_chain_set_tx(1);
-
-            tx_rearm  = 1;
-            tx_active = 1;
-            audio_dma_restart();  /* mic-in ADC / IF-out DAC, deep ring if buffered */
-            HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_SET);
             uart_puts("tx: ");
             uart_puts(mode_name(MODE));
             uart_puts("\r\n");
@@ -2004,10 +2124,7 @@ static void console_exec(char *line)
     }
     else if (str_eq(line, "rx"))
     {
-        tx_active = 0;
-        if (mode_is_freedv(MODE) && freedv_ok) freedv_chain_set_tx(0);
-        audio_dma_restart();   /* back to IF-in ADC / audio-out DAC */
-        HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_RESET);
+        radio_tx_off();
         uart_puts("rx\r\n");
     }
     else if (str_eq(line, "debug"))
@@ -2048,6 +2165,31 @@ static void console_exec(char *line)
         uart_kv("wpm", cw_get_wpm());
         uart_kv("mic", (int)mic_gain);
         uart_kv("block", (int)block_size / 2);
+        uart_puts("\r\n");
+    }
+    else if (str_eq(line, "enc"))
+    {
+        // Diagnostic for the encoder bring-up test: raw pin levels plus the
+        // decoded count, so a wiring problem (stuck level, swapped A/B, no
+        // common-to-GND) is visible directly rather than guessed at.
+        int a = HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_4) == GPIO_PIN_SET;
+        int b = HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_5) == GPIO_PIN_SET;
+        uart_kv("\r\nenc A", a);
+        uart_kv("B", b);
+        uart_kv("count", (int)encoder_poll());
+        uart_puts("\r\n");
+    }
+    else if (str_eq(line, "btn"))
+    {
+        // Diagnostic for the button bring-up test: one char per button,
+        // position i = button i+1, '1' means pressed right now.
+        uint16_t mask = buttons_read();
+        char bits[BUTTON_COUNT + 1];
+        for (int i = 0; i < BUTTON_COUNT; i++)
+            bits[i] = (mask & (1u << i)) ? '1' : '0';
+        bits[BUTTON_COUNT] = 0;
+        uart_puts("\r\nbtn 1..10: ");
+        uart_puts(bits);
         uart_puts("\r\n");
     }
     else if (*line)
@@ -2225,6 +2367,11 @@ int main(void)
   uart_kv("heap_left", (int)heap_largest_free());
   uart_puts("\r\ntype 'help' for commands\r\n> ");
 
+  // Front panel: OLED + encoder + 10 buttons + PTT (USER_Btn on this test
+  // board). See hmi.c for what's real (mode, PTT, mic gain) vs. still a UI
+  // skeleton with no hardware behind it yet (freq, band, RIT, CW pitch,
+  // volume).
+  hmi_init(&hi2c1);
 
   /* USER CODE END 2 */
 
@@ -2235,6 +2382,10 @@ int main(void)
 
     uart_pump();
     console_poll();
+
+    // Front panel: encoder, buttons, PTT, OLED redraw - see hmi.c. Rate
+    // limiting and the non-blocking I2C push live there now too.
+    hmi_poll();
 
     if (tx_active)
     {
@@ -2300,9 +2451,9 @@ int main(void)
         }
       }
       else if (dac_block_processing == 1)
-      { tx_process_block(&adc_buffer[0], &dac_buffer[0], n); dac_block_processing = 0; }
+      { tx_process_block(&adc_buffer[0], &dac_buffer[0], &sidetone_buffer[0], n); dac_block_processing = 0; }
       else if (dac_block_processing == 2)
-      { tx_process_block(&adc_buffer[n], &dac_buffer[n], n); dac_block_processing = 0; }
+      { tx_process_block(&adc_buffer[n], &dac_buffer[n], &sidetone_buffer[n], n); dac_block_processing = 0; }
     }
     else
     // RX path. Swap this with the nbfm_tx_process_block() block below to go
@@ -2700,6 +2851,15 @@ static void MX_I2C1_Init(void)
     Error_Handler();
   }
   /* USER CODE BEGIN I2C1_Init 2 */
+
+  // Interrupt-driven, not polled: the OLED framebuffer push is ~1 KB, and a
+  // blocking transfer at I2C speeds stalls the main loop for tens of ms,
+  // which is audible as a glitch in whatever audio block is due during that
+  // stall. See oled.c - HAL_I2C_Master_Transmit_IT keeps the loop running.
+  HAL_NVIC_SetPriority(I2C1_EV_IRQn, 1, 0);
+  HAL_NVIC_EnableIRQ(I2C1_EV_IRQn);
+  HAL_NVIC_SetPriority(I2C1_ER_IRQn, 1, 0);
+  HAL_NVIC_EnableIRQ(I2C1_ER_IRQn);
 
   /* USER CODE END I2C1_Init 2 */
 

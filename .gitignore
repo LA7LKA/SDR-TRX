@@ -5,7 +5,8 @@ firmware/build/
 firmware/codec2/build/
 
 # GRC generates these from the .grc sources
-firmware/GNURadio/*.py
+firmware/GNURadio/**/*.py
+firmware/GNURadio/**/__pycache__/
 
 # Editor config with a machine-local absolute path
 .vscode/

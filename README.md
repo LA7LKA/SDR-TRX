@@ -15,7 +15,7 @@ Work in progress. Expect rapid changes, refactoring and experimental branches.
 | [flutter-app/](flutter-app/) | Companion mobile app |
 | [doc/](doc/) | Architecture and design documentation |
 
-## Status — 2026-07-24
+## Status — 2026-08-03
 
 Working and tested against live signals:
 
@@ -28,14 +28,27 @@ Working and tested against live signals:
 | **FreeDV 700D** | **RX + TX working** | HF, weak-signal OFDM + LDPC |
 | **FreeDV 700E** | **RX + TX working** | As 700D with a shorter frame, so it reacquires faster |
 | **AM** | **RX + TX working** | Envelope detection in, carrier + both sidebands out |
-| **CW** | **RX working** | SSB into a 250 Hz filter at 700 Hz, 5.3 ms blocks |
-| **CW transmit** | **working** | Shaped keying, beacon on DAC1 |
+| **CW** | **RX working** | SSB into a 250 Hz filter, centre frequency (pitch) adjustable at runtime from the front panel, 5.3 ms blocks |
+| **CW transmit** | **working** | Shaped keying; carrier on DAC2, sidetone on DAC1 (speaker/phones) at the same pitch and envelope as the transmitted carrier |
 | **SSB transmit** | **working** | Phasing method; unwanted sideband below the bench noise floor |
 | **NBFM transmit** | **working** | Deviation set by mic gain, reported in telemetry |
 
+Firmware now drives its own separate RX and TX converters (ADC1/DAC1 for
+RX, ADC2/DAC2 for TX) rather than sharing one channel — see
+[doc/architecture.md](doc/architecture.md).
 
-Resource use with all four FreeDV modes compiled in: **227 KB flash of
-1024 KB**, **231 KB RAM of 320 KB**, leaving about 14 KB of heap headroom.
+### Front panel bring-up
+
+A UI test board (rotary encoder, 10 buttons, SSD1306 OLED over I2C, PTT)
+is wired to the Nucleo and driving the radio for real, not just a bench
+diagnostic: Mode and PTT call the same functions the UART console uses, mic
+gain and CW pitch adjust the live audio/DSP, and Function/Shift cycles the
+encoder between Freq/Volume/Mic/CW pitch/TX power. Frequency, band, RIT, TX
+power and filter selection are UI-only for now — there is no LO/relay
+hardware yet for them to drive. See `firmware/Core/Src/hmi.c`.
+
+Resource use with all four FreeDV modes plus the front panel compiled in:
+**~270 KB flash of 1024 KB**, **~234 KB RAM of 320 KB**.
 
 ## Architecture
 
@@ -143,6 +156,8 @@ rather than a second thing to debug at the same time as transmit.
 > amtone        AM 1 kHz test tone, to prove the modulator without a mic
 > wpm 25        CW speed
 > stat          current state
+> enc           encoder pin levels + count (front panel bring-up)
+> btn           button states 1..10 (front panel bring-up)
 ```
 
 ## Telemetry
@@ -183,16 +198,19 @@ Ready-to-run GNU Radio 3.10 flowgraphs for both are in
 - Mk1 minimal front end, so the radio can be built without a PCB
 - Programmable LO (AD9851 on I2C1), switched band-pass filter bank and VFO
   logic, behind a hardware abstraction so Mk1 and Mk2 keep sharing one core
-- CW pitch and bandwidth as front panel controls; the filter is a biquad
-  cascade rather than a FIR so retuning is five coefficients, not a redesign
-- CW offset and sidetone, which must track the pitch: a tone heard at 700 Hz
-  means the carrier is 700 Hz off the dial, and the sidetone has to match the
-  RX pitch or zero-beating lands you beside the other station
+- ~~CW pitch as a front panel control~~ — done: the filter is a biquad
+  cascade rather than a FIR, so retuning is five coefficients recomputed at
+  runtime, not a redesign. Bandwidth (currently fixed) still open.
+- ~~CW sidetone~~ — done, tracks the pitch and the transmitted envelope
+  exactly. CW offset on the *displayed* frequency is still open — needs a
+  real frequency display first (see LO1 below).
+- ~~Rotary encoder + minimal front-panel HMI~~ — done for the control
+  surface (encoder, 10 buttons, OLED, PTT); frequency/band tuning itself is
+  still UI-only pending LO1
 - CW iambic keyer
 - FreeDV TX
 - Full filterbank (FIR/FFT), improved AGC and noise reduction
 - PA control and protection logic
-- Rotary encoder + minimal front-panel HMI for frequency tuning
 - Full-menu radio control over USB (onboard CDC) and BLE (nRF52840), plus HF
   text messaging over the FreeDV data modes
 - Waterfall/spectrum display

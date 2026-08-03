@@ -1,17 +1,17 @@
 options:
   parameters:
-    author: LA7LKA
+    author: oystein
     catch_exceptions: 'True'
     category: '[GRC Hier Blocks]'
     cmake_opt: ''
     comment: ''
     copyright: ''
-    description: CW test transmitter, sends CQ CQ CQ DE LA7LKA at the 12 kHz IF
+    description: ''
     gen_cmake: 'On'
     gen_linking: dynamic
     generate_options: qt_gui
     hier_block_src_path: '.:'
-    id: cw_test
+    id: fm_test
     max_nouts: '0'
     output_language: python
     placement: (0,0)
@@ -22,7 +22,7 @@ options:
     run_options: prompt
     sizing_mode: fixed
     thread_safe_setters: ''
-    title: CW test transmitter
+    title: Not titled yet
     window_size: (1000,1000)
   states:
     bus_sink: false
@@ -33,30 +33,6 @@ options:
     state: enabled
 
 blocks:
-- name: dit_samples
-  id: variable
-  parameters:
-    comment: ''
-    value: int(samp_rate * 1.2 / wpm)
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate: [630, 12]
-    rotation: 0
-    state: enabled
-- name: if_freq
-  id: variable
-  parameters:
-    comment: ''
-    value: '12000'
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate: [420, 12]
-    rotation: 0
-    state: enabled
 - name: samp_rate
   id: variable
   parameters:
@@ -69,61 +45,33 @@ blocks:
     coordinate: [200, 12]
     rotation: 0
     state: enabled
-- name: tone
-  id: variable
-  parameters:
-    comment: ''
-    value: '700'
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate: [530, 12]
-    rotation: 0
-    state: enabled
-- name: wpm
-  id: variable
-  parameters:
-    comment: ''
-    value: '20'
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate: [320, 12]
-    rotation: 0
-    state: enabled
-- name: analog_sig_source_x_0
-  id: analog_sig_source_x
+- name: analog_nbfm_rx_0
+  id: analog_nbfm_rx
   parameters:
     affinity: ''
     alias: ''
-    amp: '0.5'
-    comment: carrier, IF plus the wanted pitch
-    freq: if_freq + tone
+    audio_rate: samp_rate
+    comment: ''
+    max_dev: 2.5e3
     maxoutbuf: '0'
     minoutbuf: '0'
-    offset: '0'
-    phase: '0'
-    samp_rate: samp_rate
-    showports: 'False'
-    type: float
-    waveform: analog.GR_COS_WAVE
+    quad_rate: samp_rate
+    tau: 75e-6
   states:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [610, 340]
+    coordinate: [824, 216.0]
     rotation: 0
-    state: disabled
+    state: enabled
 - name: analog_sig_source_x_0_0
   id: analog_sig_source_x
   parameters:
     affinity: ''
     alias: ''
     amp: '1'
-    comment: negative to mix down; a positive frequency would shift up instead
-    freq: -if_freq
+    comment: ''
+    freq: '-12000'
     maxoutbuf: '0'
     minoutbuf: '0'
     offset: '0'
@@ -136,24 +84,30 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [280, 616.0]
+    coordinate: [88, 376.0]
     rotation: 0
     state: enabled
-- name: audio_sink_0
-  id: audio_sink
+- name: analog_sig_source_x_0_0_0
+  id: analog_sig_source_x
   parameters:
     affinity: ''
     alias: ''
-    comment: ''
-    device_name: plughw:CARD=USB,DEV=0
-    num_inputs: '1'
-    ok_to_block: 'True'
+    amp: '1'
+    comment: negative mixes down
+    freq: '1000'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    offset: '0'
+    phase: '0'
     samp_rate: samp_rate
+    showports: 'False'
+    type: float
+    waveform: analog.GR_SIN_WAVE
   states:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [1030, 236]
+    coordinate: [472, 104.0]
     rotation: 0
     state: disabled
 - name: audio_sink_0_0
@@ -162,6 +116,23 @@ blocks:
     affinity: ''
     alias: ''
     comment: ''
+    device_name: plughw:CARD=J380,DEV=0
+    num_inputs: '1'
+    ok_to_block: 'True'
+    samp_rate: samp_rate
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [1216, 232.0]
+    rotation: 0
+    state: enabled
+- name: audio_sink_0_0_0
+  id: audio_sink
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
     device_name: plughw:CARD=USB,DEV=0
     num_inputs: '1'
     ok_to_block: 'True'
@@ -170,16 +141,16 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [952, 504.0]
+    coordinate: [928, 56.0]
     rotation: 0
-    state: enabled
+    state: disabled
 - name: audio_source_0
   id: audio_source
   parameters:
     affinity: ''
     alias: ''
     comment: ''
-    device_name: plughw:CARD=USB,DEV=0
+    device_name: plughw:CARD=Generic,DEV=0
     maxoutbuf: '0'
     minoutbuf: '0'
     num_outputs: '1'
@@ -189,61 +160,91 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [80, 488.0]
+    coordinate: [40, 216.0]
     rotation: 0
     state: enabled
-- name: blocks_complex_to_real_0
-  id: blocks_complex_to_real
+- name: band_pass_filter_0_0
+  id: band_pass_filter
   parameters:
     affinity: ''
     alias: ''
-    comment: ''
+    beta: '6.76'
+    comment: 'complex band pass: positive keeps USB, negative keeps LSB'
+    decim: '1'
+    gain: '1'
+    high_cutoff_freq: '2500'
+    interp: '1'
+    low_cutoff_freq: '300'
     maxoutbuf: '0'
     minoutbuf: '0'
-    vlen: '1'
+    samp_rate: samp_rate
+    type: fir_filter_fff
+    width: '200'
+    win: window.WIN_HAMMING
   states:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [784, 520.0]
+    coordinate: [664, 12.0]
     rotation: 0
-    state: enabled
-- name: blocks_multiply_const_vxx_0
-  id: blocks_multiply_const_vxx
+    state: disabled
+- name: blocks_file_source_0
+  id: blocks_file_source
   parameters:
     affinity: ''
     alias: ''
+    begin_tag: pmt.PMT_NIL
     comment: ''
-    const: '1'
+    file: /home/oystein/test_la7lka.wav
+    length: '0'
     maxoutbuf: '0'
     minoutbuf: '0'
-    type: complex
-    vlen: '1'
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate: [632, 512.0]
-    rotation: 0
-    state: enabled
-- name: blocks_multiply_xx_0
-  id: blocks_multiply_xx
-  parameters:
-    affinity: ''
-    alias: ''
-    comment: ''
-    maxoutbuf: '0'
-    minoutbuf: '0'
-    num_inputs: '2'
+    offset: '0'
+    repeat: 'True'
     type: float
     vlen: '1'
   states:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [880, 236]
+    coordinate: [312, 32.0]
     rotation: 0
     state: disabled
+- name: blocks_float_to_short_0
+  id: blocks_float_to_short
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    scale: '16384'
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [712, 416.0]
+    rotation: 0
+    state: disabled
+- name: blocks_multiply_const_vxx_0_0
+  id: blocks_multiply_const_vxx
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    const: '0.25'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    type: float
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [1008, 240.0]
+    rotation: 0
+    state: enabled
 - name: blocks_multiply_xx_0_0
   id: blocks_multiply_xx
   parameters:
@@ -259,60 +260,27 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [520, 504.0]
+    coordinate: [488, 232.0]
     rotation: 0
     state: enabled
-- name: blocks_repeat_0
-  id: blocks_repeat
+- name: blocks_short_to_float_0
+  id: blocks_short_to_float
   parameters:
     affinity: ''
     alias: ''
-    comment: stretch each dit unit to real time
-    interp: dit_samples
+    comment: ''
     maxoutbuf: '0'
     minoutbuf: '0'
-    type: float
+    scale: '16384'
     vlen: '1'
   states:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [440, 200.0]
+    coordinate: [1064, 400.0]
     rotation: 0
     state: disabled
-- name: blocks_vector_source_x_0
-  id: blocks_vector_source_x
-  parameters:
-    affinity: ''
-    alias: ''
-    comment: CQ CQ CQ DE LA7LKA, one value per dit
-    maxoutbuf: '0'
-    minoutbuf: '0'
-    repeat: 'True'
-    tags: '[]'
-    type: float
-    vector: '[1.0, 1.0, 1.0, 0.0, 1.0, 0.0, 1.0, 1.0, 1.0, 0.0, 1.0, 0.0, 0.0, 0.0,
-      1.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 0.0, 1.0, 0.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0,
-      0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 0.0, 1.0, 0.0, 1.0, 1.0, 1.0, 0.0, 1.0, 0.0,
-      0.0, 0.0, 1.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 0.0, 1.0, 0.0, 1.0, 1.0, 1.0, 0.0,
-      0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 0.0, 1.0, 0.0, 1.0, 1.0, 1.0, 0.0,
-      1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 0.0, 1.0, 0.0, 1.0, 1.0,
-      1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0,
-      0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 1.0, 0.0,
-      1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0,
-      1.0, 0.0, 1.0, 1.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0,
-      1.0, 1.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 0.0, 1.0, 0.0,
-      1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-      0.0, 0.0, 0.0, 0.0, 0.0]'
-    vlen: '1'
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate: [168, 184.0]
-    rotation: 0
-    state: disabled
-- name: hilbert_fc_0
+- name: hilbert_fc_0_0
   id: hilbert_fc
   parameters:
     affinity: ''
@@ -327,7 +295,7 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [336, 496.0]
+    coordinate: [280, 224.0]
     rotation: 0
     state: enabled
 - name: low_pass_filter_0
@@ -336,37 +304,99 @@ blocks:
     affinity: ''
     alias: ''
     beta: '6.76'
-    comment: shape the keying edges, no clicks
-    cutoff_freq: '80'
+    comment: ''
+    cutoff_freq: '6000'
     decim: '1'
     gain: '1'
     interp: '1'
     maxoutbuf: '0'
     minoutbuf: '0'
     samp_rate: samp_rate
-    type: fir_filter_fff
-    width: '60'
+    type: fir_filter_ccf
+    width: '2000'
     win: window.WIN_HAMMING
   states:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [640, 160.0]
+    coordinate: [608, 200.0]
+    rotation: 0
+    state: enabled
+- name: rational_resampler_xxx_0
+  id: rational_resampler_xxx
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: 48k -> 8k for codec2
+    decim: '1'
+    fbw: '0'
+    interp: '1'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    taps: '[]'
+    type: fff
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [512, 392.0]
+    rotation: 0
+    state: disabled
+- name: rational_resampler_xxx_0_0
+  id: rational_resampler_xxx
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: 8k -> 48k for the sound card
+    decim: '1'
+    fbw: '0'
+    interp: '6'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    taps: '[]'
+    type: fff
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [1224, 376.0]
+    rotation: 0
+    state: disabled
+- name: vocoder_freedv_rx_ss_0
+  id: vocoder_freedv_rx_ss
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: must match the radio
+    interleave_frames: '1'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    mode: freedv_api.MODE_2400B
+    squelch_enable: 'False'
+    squelch_thresh: '-100.0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [856, 392.0]
     rotation: 0
     state: disabled
 
 connections:
-- [analog_sig_source_x_0, '0', blocks_multiply_xx_0, '1']
+- [analog_nbfm_rx_0, '0', blocks_multiply_const_vxx_0_0, '0']
 - [analog_sig_source_x_0_0, '0', blocks_multiply_xx_0_0, '1']
-- [audio_source_0, '0', hilbert_fc_0, '0']
-- [blocks_complex_to_real_0, '0', audio_sink_0_0, '0']
-- [blocks_multiply_const_vxx_0, '0', blocks_complex_to_real_0, '0']
-- [blocks_multiply_xx_0, '0', audio_sink_0, '0']
-- [blocks_multiply_xx_0_0, '0', blocks_multiply_const_vxx_0, '0']
-- [blocks_repeat_0, '0', low_pass_filter_0, '0']
-- [blocks_vector_source_x_0, '0', blocks_repeat_0, '0']
-- [hilbert_fc_0, '0', blocks_multiply_xx_0_0, '0']
-- [low_pass_filter_0, '0', blocks_multiply_xx_0, '0']
+- [analog_sig_source_x_0_0_0, '0', band_pass_filter_0_0, '0']
+- [audio_source_0, '0', hilbert_fc_0_0, '0']
+- [band_pass_filter_0_0, '0', audio_sink_0_0_0, '0']
+- [blocks_file_source_0, '0', band_pass_filter_0_0, '0']
+- [blocks_float_to_short_0, '0', vocoder_freedv_rx_ss_0, '0']
+- [blocks_multiply_const_vxx_0_0, '0', audio_sink_0_0, '0']
+- [blocks_multiply_xx_0_0, '0', low_pass_filter_0, '0']
+- [blocks_short_to_float_0, '0', rational_resampler_xxx_0_0, '0']
+- [hilbert_fc_0_0, '0', blocks_multiply_xx_0_0, '0']
+- [low_pass_filter_0, '0', analog_nbfm_rx_0, '0']
+- [rational_resampler_xxx_0, '0', blocks_float_to_short_0, '0']
+- [vocoder_freedv_rx_ss_0, '0', blocks_short_to_float_0, '0']
 
 metadata:
   file_format: 1

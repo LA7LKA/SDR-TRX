@@ -1,0 +1,500 @@
+options:
+  parameters:
+    author: LA7LKA
+    catch_exceptions: 'True'
+    category: '[GRC Hier Blocks]'
+    cmake_opt: ''
+    comment: ''
+    copyright: ''
+    description: 'SSB bench flow: RX test-signal generator and TX-verify listener in one flowgraph, switched by the PTT checkbox'
+    gen_cmake: 'On'
+    gen_linking: dynamic
+    generate_options: qt_gui
+    hier_block_src_path: '.:'
+    id: ssb
+    max_nouts: '0'
+    output_language: python
+    placement: (0,0)
+    qt_qss_theme: ''
+    realtime_scheduling: ''
+    run: 'True'
+    run_command: '{python} -u {filename}'
+    run_options: prompt
+    sizing_mode: fixed
+    thread_safe_setters: ''
+    title: SSB bench (RX + TX)
+    window_size: (1400,1000)
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [8, 8]
+    rotation: 0
+    state: enabled
+
+blocks:
+- name: samp_rate
+  id: variable
+  parameters:
+    comment: ''
+    value: '48000'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [16, 12]
+    rotation: 0
+    state: enabled
+- name: if_freq
+  id: variable
+  parameters:
+    comment: ''
+    value: '12000'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [136, 12]
+    rotation: 0
+    state: enabled
+- name: sb
+  id: variable
+  parameters:
+    comment: 1 for USB, -1 for LSB
+    value: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [256, 12]
+    rotation: 0
+    state: enabled
+- name: af_gain
+  id: variable
+  parameters:
+    comment: ''
+    value: '4'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [376, 12]
+    rotation: 0
+    state: enabled
+- name: tone_freq
+  id: variable
+  parameters:
+    comment: RX-test modulating tone
+    value: '700'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [496, 12]
+    rotation: 0
+    state: enabled
+- name: ptt
+  id: variable_qtgui_check_box
+  parameters:
+    comment: 'Unchecked = RX test (listen to the synthetic IF being demodulated).
+      Checked = TX test (listen to what the STM32 transmitted). Space toggles it
+      once it has keyboard focus, same as any Qt checkbox.'
+    gui_hint: ''
+    label: PTT (TX)
+    press_value: '1'
+    release_value: '0'
+    type: int
+    value: '0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [616, 12]
+    rotation: 0
+    state: enabled
+
+# ---- RX-test generator: SSB-modulate a tone up to the 12 kHz IF ----
+# Feeds the Generic (integrated) card's LEFT output, wired to the STM32's
+# PC0 (RX IF in). Runs continuously - the STM32 only actually samples it
+# while in RX, same as real hardware would.
+- name: analog_sig_source_x_0
+  id: analog_sig_source_x
+  parameters:
+    affinity: ''
+    alias: ''
+    amp: '0.3'
+    comment: RX-test modulating tone
+    freq: tone_freq
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    offset: '0'
+    phase: '0'
+    samp_rate: samp_rate
+    showports: 'False'
+    type: float
+    waveform: analog.GR_COS_WAVE
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [40, 140]
+    rotation: 0
+    state: enabled
+- name: hilbert_fc_0
+  id: hilbert_fc
+  parameters:
+    affinity: ''
+    alias: ''
+    beta: '6.76'
+    comment: modulator - real tone to analytic
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_taps: '129'
+    win: window.WIN_HANN
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [200, 132]
+    rotation: 0
+    state: enabled
+- name: analog_sig_source_x_1
+  id: analog_sig_source_x
+  parameters:
+    affinity: ''
+    alias: ''
+    amp: '1'
+    comment: upconvert carrier; sign of if_freq*sb picks USB/LSB
+    freq: if_freq*sb
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    offset: '0'
+    phase: '0'
+    samp_rate: samp_rate
+    showports: 'False'
+    type: complex
+    waveform: analog.GR_COS_WAVE
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [200, 220]
+    rotation: 0
+    state: enabled
+- name: blocks_multiply_xx_0
+  id: blocks_multiply_xx
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_inputs: '2'
+    type: complex
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [360, 152]
+    rotation: 0
+    state: enabled
+- name: blocks_complex_to_real_0
+  id: blocks_complex_to_real
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [520, 152]
+    rotation: 0
+    state: enabled
+- name: blocks_multiply_const_vxx_0
+  id: blocks_multiply_const_vxx
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: level into the soundcard, not af_gain (that is the demod side)
+    const: '0.3'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    type: float
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [680, 152]
+    rotation: 0
+    state: enabled
+
+# ---- TX-test listener: demodulate whatever the STM32 transmitted ----
+# Captures the Generic card's RIGHT input, wired to the STM32's DAC2/PA5
+# (TX IF out). Same demod chain as the old ssb_rx.grc.
+- name: hilbert_fc_1
+  id: hilbert_fc
+  parameters:
+    affinity: ''
+    alias: ''
+    beta: '6.76'
+    comment: demod - real IF to analytic
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_taps: '129'
+    win: window.WIN_HANN
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [40, 460]
+    rotation: 0
+    state: enabled
+- name: analog_sig_source_x_2
+  id: analog_sig_source_x
+  parameters:
+    affinity: ''
+    alias: ''
+    amp: '1'
+    comment: negative mixes down
+    freq: -if_freq
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    offset: '0'
+    phase: '0'
+    samp_rate: samp_rate
+    showports: 'False'
+    type: complex
+    waveform: analog.GR_COS_WAVE
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [40, 560]
+    rotation: 0
+    state: enabled
+- name: blocks_multiply_xx_1
+  id: blocks_multiply_xx
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_inputs: '2'
+    type: complex
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [200, 480]
+    rotation: 0
+    state: enabled
+- name: band_pass_filter_0
+  id: band_pass_filter
+  parameters:
+    affinity: ''
+    alias: ''
+    beta: '6.76'
+    comment: 'complex band pass: positive keeps USB, negative keeps LSB'
+    decim: '1'
+    gain: '1'
+    high_cutoff_freq: max(300*sb, 2700*sb)
+    interp: '1'
+    low_cutoff_freq: min(300*sb, 2700*sb)
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    samp_rate: samp_rate
+    type: fir_filter_ccf
+    width: '200'
+    win: window.WIN_HAMMING
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [360, 480]
+    rotation: 0
+    state: enabled
+- name: blocks_complex_to_real_1
+  id: blocks_complex_to_real
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [560, 480]
+    rotation: 0
+    state: enabled
+- name: blocks_multiply_const_vxx_1
+  id: blocks_multiply_const_vxx
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    const: af_gain
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    type: float
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [720, 480]
+    rotation: 0
+    state: enabled
+- name: band_pass_filter_1
+  id: band_pass_filter
+  parameters:
+    affinity: ''
+    alias: ''
+    beta: '6.76'
+    comment: final audio cleanup
+    decim: '1'
+    gain: '1'
+    high_cutoff_freq: '2500'
+    interp: '1'
+    low_cutoff_freq: '400'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    samp_rate: samp_rate
+    type: fir_filter_fff
+    width: '200'
+    win: window.WIN_HAMMING
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [880, 480]
+    rotation: 0
+    state: enabled
+
+# ---- I/O ----
+- name: audio_sink_generic
+  id: audio_sink
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: 'ch0 (L) -> STM32 PC0 (RX IF in). ch1 (R) -> STM32 PA3 (TX mic in)'
+    device_name: plughw:CARD=Generic,DEV=0
+    num_inputs: '2'
+    ok_to_block: 'True'
+    samp_rate: samp_rate
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [880, 152]
+    rotation: 0
+    state: enabled
+- name: audio_source_generic
+  id: audio_source
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: 'ch0 (L) <- STM32 DAC1/PA4 (RX audio out). ch1 (R) <- STM32 DAC2/PA5
+      (TX IF out)'
+    device_name: plughw:CARD=Generic,DEV=0
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_outputs: '2'
+    ok_to_block: 'True'
+    samp_rate: samp_rate
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [40, 700]
+    rotation: 0
+    state: enabled
+- name: audio_source_jabra
+  id: audio_source
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: operator mic, passed straight through to the STM32's mic input
+    device_name: plughw:CARD=J380,DEV=0
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_outputs: '1'
+    ok_to_block: 'True'
+    samp_rate: samp_rate
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [520, 220]
+    rotation: 0
+    state: enabled
+- name: audio_sink_jabra
+  id: audio_sink
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: operator headphones - hears whichever branch ptt selects
+    device_name: plughw:CARD=J380,DEV=0
+    num_inputs: '1'
+    ok_to_block: 'True'
+    samp_rate: samp_rate
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [1240, 620]
+    rotation: 0
+    state: enabled
+- name: blocks_selector_0
+  id: blocks_selector
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: 'ptt=0: monitor the RX-test demod. ptt=1: monitor the TX-verify demod'
+    enabled: 'True'
+    input_index: ptt
+    num_inputs: '2'
+    num_outputs: '1'
+    output_index: '0'
+    showports: 'False'
+    type: float
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [1080, 620]
+    rotation: 0
+    state: enabled
+
+connections:
+- [analog_sig_source_x_0, '0', hilbert_fc_0, '0']
+- [hilbert_fc_0, '0', blocks_multiply_xx_0, '0']
+- [analog_sig_source_x_1, '0', blocks_multiply_xx_0, '1']
+- [blocks_multiply_xx_0, '0', blocks_complex_to_real_0, '0']
+- [blocks_complex_to_real_0, '0', blocks_multiply_const_vxx_0, '0']
+- [blocks_multiply_const_vxx_0, '0', audio_sink_generic, '0']
+- [audio_source_jabra, '0', audio_sink_generic, '1']
+- [audio_source_generic, '1', hilbert_fc_1, '0']
+- [hilbert_fc_1, '0', blocks_multiply_xx_1, '0']
+- [analog_sig_source_x_2, '0', blocks_multiply_xx_1, '1']
+- [blocks_multiply_xx_1, '0', band_pass_filter_0, '0']
+- [band_pass_filter_0, '0', blocks_complex_to_real_1, '0']
+- [blocks_complex_to_real_1, '0', blocks_multiply_const_vxx_1, '0']
+- [blocks_multiply_const_vxx_1, '0', band_pass_filter_1, '0']
+- [band_pass_filter_1, '0', blocks_selector_0, '1']
+- [audio_source_generic, '0', blocks_selector_0, '0']
+- [blocks_selector_0, '0', audio_sink_jabra, '0']
+
+metadata:
+  file_format: 1
+  grc_version: 3.10.12.0

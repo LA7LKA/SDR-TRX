@@ -69,7 +69,11 @@ Core/Src/system_stm32f7xx.c \
 Core/Src/sysmem.c \
 Core/Src/syscalls.c  \
 Core/Src/dsp.c \
-Core/Src/freedv_chain.c
+Core/Src/freedv_chain.c \
+Core/Src/oled.c \
+Core/Src/encoder.c \
+Core/Src/buttons.c \
+Core/Src/hmi.c
 
 # codec2 / FreeDV library sources (mirrors CODEC2_SRCS in codec2/src/CMakeLists.txt)
 # Kept in its own variable so codec2 can be given its own compile flags below.

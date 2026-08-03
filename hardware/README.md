@@ -44,7 +44,7 @@ One card per block, plus a Nucleo-F746ZG as the MCU/DSP "card":
 | SWR bridge | Directional coupler (fwd/rev), feeding ADC3's control scan for PA protection/foldback |
 | PIN T/R | Antenna transmit/receive switch, PIN diodes for QSK |
 | LF | Electret mic preamp → ADC2, LM386 speaker/headphone output from DAC1 — the first card being built, since it is pure audio and testable against the existing firmware with no RF involved |
-| HMI | Rotary encoder (+ minimal display/buttons) for frequency tuning, on the front panel |
+| HMI | Rotary encoder + 10 buttons + SSD1306 OLED + PTT, on the front panel — firmware side (`firmware/Core/Src/hmi.c`) proven on a Nucleo test board 2026-08-03: encoder/buttons/OLED/PTT/mode select all drive the real radio, not just a bench diagnostic |
 | BLE bridge | nRF52840 (reused USB dongle), bridging a free STM32 UART to the [flutter-app/](../flutter-app/) over Bluetooth Low Energy |
 
 The Nucleo's onboard USB (`USB_OTG_FS`) gives a second, wired control path —

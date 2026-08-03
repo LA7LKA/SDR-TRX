@@ -97,7 +97,7 @@ blocks:
     affinity: ''
     alias: ''
     comment: ''
-    device_name: plughw:CARD=USB,DEV=0
+    device_name: plughw:CARD=Generic,DEV=0
     num_inputs: '1'
     ok_to_block: 'True'
     samp_rate: samp_rate
