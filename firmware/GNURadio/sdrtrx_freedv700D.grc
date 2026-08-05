@@ -102,6 +102,40 @@ blocks:
     coordinate: [1240, 736.0]
     rotation: 0
     state: enabled
+- name: audio_sink_0_0_0
+  id: audio_sink
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    device_name: plughw:CARD=Audio,DEV=0
+    num_inputs: '1'
+    ok_to_block: 'True'
+    samp_rate: samp_rate
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [1024, 136.0]
+    rotation: 0
+    state: enabled
+- name: audio_sink_0_0_1
+  id: audio_sink
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    device_name: plughw:CARD=USB,DEV=0
+    num_inputs: '1'
+    ok_to_block: 'True'
+    samp_rate: samp_rate
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [1024, 48.0]
+    rotation: 0
+    state: enabled
 - name: audio_source_0
   id: audio_source
   parameters:
@@ -140,29 +174,42 @@ blocks:
     coordinate: [24, 744.0]
     rotation: 0
     state: enabled
-- name: band_pass_filter_0_0
-  id: band_pass_filter
+- name: audio_source_0_1
+  id: audio_source
   parameters:
     affinity: ''
     alias: ''
-    beta: '6.76'
     comment: ''
-    decim: '1'
-    gain: '1'
-    high_cutoff_freq: '2500'
-    interp: '1'
-    low_cutoff_freq: '400'
+    device_name: plughw:CARD=Audio,DEV=0
     maxoutbuf: '0'
     minoutbuf: '0'
+    num_outputs: '1'
+    ok_to_block: 'False'
     samp_rate: samp_rate
-    type: fir_filter_fff
-    width: '200'
-    win: window.WIN_HAMMING
   states:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [256, 220.0]
+    coordinate: [784, 48.0]
+    rotation: 0
+    state: enabled
+- name: audio_source_0_1_0
+  id: audio_source
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    device_name: plughw:CARD=USB,DEV=0
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_outputs: '1'
+    ok_to_block: 'False'
+    samp_rate: samp_rate
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [784, 136.0]
     rotation: 0
     state: enabled
 - name: band_pass_filter_0_0_0
@@ -525,13 +572,14 @@ blocks:
 connections:
 - [analog_sig_source_x_0, '0', blocks_multiply_xx_0, '1']
 - [analog_sig_source_x_0, '0', blocks_multiply_xx_0_0, '0']
-- [audio_source_0, '0', band_pass_filter_0_0, '0']
+- [audio_source_0, '0', rational_resampler_xxx_0_0, '0']
 - [audio_source_0_0, '0', hilbert_fc_0_0, '0']
-- [band_pass_filter_0_0, '0', rational_resampler_xxx_0_0, '0']
+- [audio_source_0_1, '0', audio_sink_0_0_1, '0']
+- [audio_source_0_1_0, '0', audio_sink_0_0_0, '0']
 - [band_pass_filter_0_0_0, '0', rational_resampler_xxx_0_0_0, '0']
 - [blocks_complex_to_real_0, '0', audio_sink_0, '0']
 - [blocks_complex_to_real_0_0, '0', band_pass_filter_0_0_0, '0']
-- [blocks_file_source_0, '0', band_pass_filter_0_0, '0']
+- [blocks_file_source_0, '0', rational_resampler_xxx_0_0, '0']
 - [blocks_float_to_short_0, '0', vocoder_freedv_tx_ss_0, '0']
 - [blocks_float_to_short_0_0, '0', vocoder_freedv_rx_ss_0, '0']
 - [blocks_multiply_const_vxx_0, '0', blocks_complex_to_real_0, '0']

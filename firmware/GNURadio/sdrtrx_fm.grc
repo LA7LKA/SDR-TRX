@@ -107,6 +107,29 @@ blocks:
     coordinate: [272, 304.0]
     rotation: 0
     state: enabled
+- name: analog_sig_source_x_0_0_1
+  id: analog_sig_source_x
+  parameters:
+    affinity: ''
+    alias: ''
+    amp: '1'
+    comment: ''
+    freq: '-12000'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    offset: '0'
+    phase: '0'
+    samp_rate: samp_rate
+    showports: 'False'
+    type: complex
+    waveform: analog.GR_COS_WAVE
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [472, 616.0]
+    rotation: 0
+    state: enabled
 - name: audio_sink_0_0
   id: audio_sink
   parameters:
@@ -115,7 +138,7 @@ blocks:
     comment: ''
     device_name: plughw:CARD=J380,DEV=0
     num_inputs: '1'
-    ok_to_block: 'True'
+    ok_to_block: 'False'
     samp_rate: samp_rate
   states:
     bus_sink: false
@@ -132,13 +155,47 @@ blocks:
     comment: ''
     device_name: plughw:CARD=Generic,DEV=0
     num_inputs: '1'
+    ok_to_block: 'False'
+    samp_rate: samp_rate
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [1216, 496.0]
+    rotation: 0
+    state: enabled
+- name: audio_sink_0_0_0_0
+  id: audio_sink
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    device_name: plughw:CARD=Audio,DEV=0
+    num_inputs: '1'
     ok_to_block: 'True'
     samp_rate: samp_rate
   states:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [1104, 496.0]
+    coordinate: [1192, 120.0]
+    rotation: 0
+    state: enabled
+- name: audio_sink_0_0_1
+  id: audio_sink
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    device_name: plughw:CARD=USB,DEV=0
+    num_inputs: '1'
+    ok_to_block: 'False'
+    samp_rate: samp_rate
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [1192, 32.0]
     rotation: 0
     state: enabled
 - name: audio_source_0
@@ -151,13 +208,13 @@ blocks:
     maxoutbuf: '0'
     minoutbuf: '0'
     num_outputs: '1'
-    ok_to_block: 'True'
+    ok_to_block: 'False'
     samp_rate: samp_rate
   states:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [40, 216.0]
+    coordinate: [0, 144.0]
     rotation: 0
     state: enabled
 - name: audio_source_0_0
@@ -170,13 +227,51 @@ blocks:
     maxoutbuf: '0'
     minoutbuf: '0'
     num_outputs: '1'
-    ok_to_block: 'True'
+    ok_to_block: 'False'
     samp_rate: samp_rate
   states:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [24, 512.0]
+    coordinate: [0, 512.0]
+    rotation: 0
+    state: enabled
+- name: audio_source_0_1
+  id: audio_source
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    device_name: plughw:CARD=Audio,DEV=0
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_outputs: '1'
+    ok_to_block: 'False'
+    samp_rate: samp_rate
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [952, 32.0]
+    rotation: 0
+    state: enabled
+- name: audio_source_0_1_0
+  id: audio_source
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    device_name: plughw:CARD=USB,DEV=0
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_outputs: '1'
+    ok_to_block: 'False'
+    samp_rate: samp_rate
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [952, 120.0]
     rotation: 0
     state: enabled
 - name: band_pass_filter_0_0
@@ -220,13 +315,35 @@ blocks:
     coordinate: [896, 512.0]
     rotation: 0
     state: enabled
+- name: blocks_file_source_0
+  id: blocks_file_source
+  parameters:
+    affinity: ''
+    alias: ''
+    begin_tag: pmt.PMT_NIL
+    comment: ''
+    file: /home/oystein/test_la7lka.wav
+    length: '0'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    offset: '0'
+    repeat: 'True'
+    type: float
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [40, 296.0]
+    rotation: 0
+    state: disabled
 - name: blocks_multiply_const_vxx_0_0
   id: blocks_multiply_const_vxx
   parameters:
     affinity: ''
     alias: ''
     comment: ''
-    const: '0.25'
+    const: '0.1'
     maxoutbuf: '0'
     minoutbuf: '0'
     type: float
@@ -236,6 +353,24 @@ blocks:
     bus_source: false
     bus_structure: null
     coordinate: [1008, 240.0]
+    rotation: 0
+    state: enabled
+- name: blocks_multiply_const_vxx_0_0_0
+  id: blocks_multiply_const_vxx
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    const: '0.1'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    type: float
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [1056, 504.0]
     rotation: 0
     state: enabled
 - name: blocks_multiply_xx_0_0
@@ -289,7 +424,7 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [280, 224.0]
+    coordinate: [256, 200.0]
     rotation: 0
     state: enabled
 - name: low_pass_filter_0
@@ -319,14 +454,18 @@ blocks:
 
 connections:
 - [analog_nbfm_rx_0, '0', blocks_multiply_const_vxx_0_0, '0']
-- [analog_nbfm_tx_0, '0', blocks_multiply_xx_0_0_0, '1']
+- [analog_nbfm_tx_0, '0', blocks_multiply_xx_0_0_0, '0']
 - [analog_sig_source_x_0_0, '0', blocks_multiply_xx_0_0, '1']
-- [analog_sig_source_x_0_0, '0', blocks_multiply_xx_0_0_0, '0']
+- [analog_sig_source_x_0_0_1, '0', blocks_multiply_xx_0_0_0, '1']
 - [audio_source_0, '0', hilbert_fc_0_0, '0']
 - [audio_source_0_0, '0', band_pass_filter_0_0, '0']
+- [audio_source_0_1, '0', audio_sink_0_0_1, '0']
+- [audio_source_0_1_0, '0', audio_sink_0_0_0_0, '0']
 - [band_pass_filter_0_0, '0', analog_nbfm_tx_0, '0']
-- [blocks_complex_to_real_0, '0', audio_sink_0_0_0, '0']
+- [blocks_complex_to_real_0, '0', blocks_multiply_const_vxx_0_0_0, '0']
+- [blocks_file_source_0, '0', band_pass_filter_0_0, '0']
 - [blocks_multiply_const_vxx_0_0, '0', audio_sink_0_0, '0']
+- [blocks_multiply_const_vxx_0_0_0, '0', audio_sink_0_0_0, '0']
 - [blocks_multiply_xx_0_0, '0', low_pass_filter_0, '0']
 - [blocks_multiply_xx_0_0_0, '0', blocks_complex_to_real_0, '0']
 - [hilbert_fc_0_0, '0', blocks_multiply_xx_0_0, '0']
