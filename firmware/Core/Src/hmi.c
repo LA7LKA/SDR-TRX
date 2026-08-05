@@ -23,6 +23,8 @@ void radio_set_mode(int mode);
 int  radio_tx_on(void);
 void radio_tx_off(void);
 void cw_set_pitch(float hz);
+int  audio_source_is_usb(void);
+void audio_source_toggle(void);
 
 /* Button numbers, in D2..D10+D12 wiring order - see buttons.h. */
 enum {
@@ -92,29 +94,32 @@ static int      locked       = 0;
 
 static void redraw(void)
 {
-    char l0[24], l1[24], l2[24], l3[32];
+    char l0[24], l1[24], l2[24], l3[40];
 
     snprintf(l0, sizeof(l0), "%s %s", mode_name(MODE), filt_name[filt_idx]);
-    snprintf(l1, sizeof(l1), "%sM F:%lu", band_name[band_idx], (unsigned long)vfo_freq_hz);
+    snprintf(l1, sizeof(l1), "%sM F:%luHZ", band_name[band_idx], (unsigned long)vfo_freq_hz);
 
     switch (focus)
     {
-    case FOCUS_FREQ:    snprintf(l2, sizeof(l2), "STEP:%lu", (unsigned long)step_table[step_idx]); break;
+    case FOCUS_FREQ:    snprintf(l2, sizeof(l2), "STEP:%luHZ", (unsigned long)step_table[step_idx]); break;
     case FOCUS_VOLUME:  snprintf(l2, sizeof(l2), "VOL:%d", volume); break;
     case FOCUS_MIC:     snprintf(l2, sizeof(l2), "MIC:%d", (int)mic_gain); break;
-    case FOCUS_CWPITCH: snprintf(l2, sizeof(l2), "PITCH:%d", (int)cw_pitch_hz); break;
+    case FOCUS_CWPITCH: snprintf(l2, sizeof(l2), "PITCH:%dHZ", (int)cw_pitch_hz); break;
     case FOCUS_POWER:   snprintf(l2, sizeof(l2), "PWR:%d", tx_power_pct); break;
-    case FOCUS_RIT:     snprintf(l2, sizeof(l2), "RIT:%ld", (long)rit_offset_hz); break;
+    case FOCUS_RIT:     snprintf(l2, sizeof(l2), "RIT:%ldHZ", (long)rit_offset_hz); break;
     default:            l2[0] = 0; break;
     }
 
+    /* RX/TX and the audio source are always shown, not just as flags that
+       appear/vanish - Oystein specifically wants both legible on this line
+       at a glance, not inferred from absence of other flags. */
     l3[0] = 0;
     if (locked)       strcat(l3, "LOCK ");
-    if (tx_active)    strcat(l3, "TX ");
     if (rit_active)   strcat(l3, "RIT ");
     if (split_active) strcat(l3, "SPLIT ");
     if (tune_active)  strcat(l3, "TUNE ");
-    if (!l3[0])       strcpy(l3, "RX");
+    strcat(l3, tx_active ? "TX " : "RX ");
+    strcat(l3, audio_source_is_usb() ? "AUDIO:USB" : "AUDIO:ANLG");
 
     oled_clear();
     oled_draw_text(0, 0, l0);
@@ -190,6 +195,22 @@ void hmi_poll(void)
 
     int changed = 0;
 
+    /* tx_active and audio_source can also change from outside this module
+       (the UART console's "tx"/"rx"/"src" commands) - without this check
+       the OLED only ever reflected changes hmi_poll() itself caused
+       (button/encoder edges), so a console-driven change left the display
+       showing stale state, e.g. still "AUDIO:USB" after "src analog" was
+       typed at the console. Compare against what we last drew and pick
+       up any external change the same way a local edit would. */
+    {
+        static int last_tx_active = -1;
+        static int last_audio_usb = -1;
+        int now_usb = audio_source_is_usb();
+
+        if ((int)tx_active != last_tx_active) { last_tx_active = tx_active; changed = 1; }
+        if (now_usb != last_audio_usb)        { last_audio_usb = now_usb;   changed = 1; }
+    }
+
     if (btn_edge & (1u << (BTN_FUNCTION - 1)))
     {
         focus = (focus == FOCUS_POWER) ? FOCUS_FREQ : (focus_t)(focus + 1);
@@ -246,7 +267,15 @@ void hmi_poll(void)
         locked = 1;
         changed = 1;
     }
-    /* BTN_ENTER: reserved for a menu system that doesn't exist yet. */
+    if (btn_edge & (1u << (BTN_ENTER - 1)))
+    {
+        /* Only menu function assigned to this button so far: toggle audio
+           routing between the analog ADC/DAC pins and the USB Audio class
+           (see main.c's audio_source). A fuller menu system is still not
+           built. */
+        audio_source_toggle();
+        changed = 1;
+    }
 
     if (enc_delta != 0)
     {

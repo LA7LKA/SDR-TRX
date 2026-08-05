@@ -31,6 +31,8 @@
 #include "encoder.h"
 #include "buttons.h"
 #include "hmi.h"
+#include "usb_device.h"
+#include "usbd_audio_duplex.h"
 #include <math.h>
 #include <stdio.h>
 
@@ -741,6 +743,7 @@ void ssb_process_block(const uint16_t *in, uint16_t *out, int n)
     float *IQ_in     = &dsp_scratch[3 * SCRATCH_N];   // interleaved I/Q,   2n
     float *NCO_buf   = &dsp_scratch[5 * SCRATCH_N];   // interleaved cos/sin, 2n
     float *IQ_mix    = &dsp_scratch[7 * SCRATCH_N];   // interleaved I/Q,   2n
+    float *ssb_raw   = &dsp_scratch[9 * SCRATCH_N];   // FreeDV fallback audio, see MODE_FREEDV below
 
     // ---------------------------------------------------------
     // 1) ADC → normalisert I
@@ -859,7 +862,13 @@ void ssb_process_block(const uint16_t *in, uint16_t *out, int n)
         rx_peak = peak;
         rx_blocks++;
 
-        // 48k -> 8k -> FreeDV 1600 demod -> 8k -> 48k
+        // Keep the plain-SSB audio so we can fall back to it below - this is
+        // what makes "listen on SSB, switch over once FreeDV syncs" work:
+        // audio_buf gets overwritten with decoded speech (or noise, while
+        // still hunting for sync), so save the version before that happens.
+        memcpy(ssb_raw, audio_buf, n * sizeof(float));
+
+        // 48k -> 8k -> FreeDV demod -> 8k -> 48k
         if (freedv_ok)
         {
             uint32_t t0 = DWT->CYCCNT;
@@ -871,6 +880,13 @@ void ssb_process_block(const uint16_t *in, uint16_t *out, int n)
             if (dt > rx_fdv_cycles_max)
                 rx_fdv_cycles_max = dt;
         }
+
+        // Not synced yet (or freedv_open() itself failed): play the SSB
+        // audio instead of silence/decoder noise, same idea as an analog
+        // squelch - you hear the signal you're tuned to either way, just
+        // as decoded speech once sync locks.
+        if (!freedv_ok || !freedv_chain_synced())
+            memcpy(audio_buf, ssb_raw, n * sizeof(float));
     }
     else
     {
@@ -1093,6 +1109,204 @@ static void dsp_filters_init(void)
 // The DAC idles at mid-scale; zero would slam the output to the rail.
 #define DAC_MID 2048
 
+/*
+ * Audio routing: normally TX mic-in/RX speaker-out ride the real ADC2/DAC1
+ * analog pins. SRC_USB instead ties the same process_block()/
+ * tx_process_block() call sites to the USBD_AUDIO_DUPLEX class (see
+ * usbd_audio_duplex.c) - PC speaker audio substitutes for the mic ADC
+ * samples on TX, and RX DAC audio is mirrored out to the PC as "microphone"
+ * input instead of/in addition to the physical DAC1 pin. Chosen once by
+ * the operator (console "src" command / HMI menu), not mixed at runtime -
+ * simpler than blending two sources, and each is independently testable.
+ */
+typedef enum { AUDIO_SRC_ANALOG = 0, AUDIO_SRC_USB } audio_src_t;
+volatile audio_src_t audio_source = AUDIO_SRC_ANALOG;
+
+/* uint16 ADC/DAC samples here are 12-bit, DC-centered at DAC_MID (2048).
+   USB Audio PCM is 16-bit signed, centered at 0. <<4 covers the 12->16 bit
+   range exactly (2048 << 4 = 32768). */
+static inline int16_t sample_to_pcm16(uint16_t raw)
+{
+    int32_t v = ((int32_t)raw - DAC_MID) << 4;
+    if (v >  32767) v =  32767;
+    if (v < -32768) v = -32768;
+    return (int16_t)v;
+}
+
+static inline uint16_t pcm16_to_sample(int16_t pcm)
+{
+    int32_t v = DAC_MID + ((int32_t)pcm >> 4);
+    if (v < 0)    v = 0;
+    if (v > 4095) v = 4095;
+    return (uint16_t)v;
+}
+
+/* Call right before a TX process_block()/tx_process_block() reads its ADC
+   slice: when SRC_USB, overwrite that slice with PC "speaker" audio pulled
+   from the USB class instead, so the mode's DSP is none the wiser about
+   where its input came from. */
+extern float mic_gain;   /* defined with the SSB modulator below */
+
+/*
+ * Returns the buffer the TX modulator should actually read this block:
+ * normally the caller's own ADC slice, but a private buffer holding USB
+ * audio when SRC_USB.
+ *
+ * It must NOT write into adc_buffer. ADC2's DMA runs continuously into
+ * that buffer during transmit (audio_dma_start(): HAL_ADC_Start_DMA(&hadc2,
+ * adc_buffer, ...) in circular mode), paced by the same TIM6 as the DAC -
+ * so anything written there is racing live mic samples landing in the very
+ * same half at 48 kHz. Some injected samples survived to the modulator,
+ * others were overwritten by (near-silent) mic data first, at a cadence
+ * tied to the DMA position: audible as chopped-up audio, while every USB
+ * ring counter stayed perfectly clean because the ring itself was never
+ * the problem - the corruption happened downstream, after the handoff.
+ * Analog TX was unaffected for the same reason: no injection, the ADC data
+ * is exactly what that path wants.
+ */
+/*
+ * Bisection aid for the "USB TX audio sounds chopped" hunt: when set (the
+ * console's "tone" command), a clean firmware-generated 1 kHz sine is fed
+ * to the modulator INSTEAD of the USB audio, entering the TX chain at
+ * exactly the same point with exactly the same scaling. Everything
+ * downstream - modulator, DAC, DMA, RF - is identical either way, so:
+ *   tone clean, USB chopped  -> the samples arriving over USB are already
+ *                               chopped before we touch them (host side)
+ *   tone also chopped        -> something in this firmware's TX handling
+ *                               of injected audio, not the USB transport
+ * Analog TX being clean already rules the modulator itself out, but it
+ * reads adc_buffer directly and never exercises this injection path.
+ */
+volatile int usb_tx_testtone = 0;
+
+static const uint16_t *usb_audio_tx_source(const uint16_t *adc_slice, uint32_t n)
+{
+    /* Sized for BLOCK_SIZE_ANALOG, not BLOCK_SIZE_MAX: only the
+       non-buffered (analog) TX path calls this, where n is always
+       block_size/2 = 256. The buffered FreeDV path has its own tx_mic
+       buffer and never gets here. Sizing these for BLOCK_SIZE_MAX pushed
+       .bss past the point where FreeDV's heap allocation starts failing
+       (see the ring-size history in usbd_audio_duplex.h). */
+    static uint16_t usb_tx_buf[BLOCK_SIZE_ANALOG / 2];
+    static int16_t  pcm[BLOCK_SIZE_ANALOG / 2];
+
+    if (audio_source != AUDIO_SRC_USB || n > (BLOCK_SIZE_ANALOG / 2))
+        return adc_slice;
+
+    if (usb_tx_testtone)
+    {
+        /* Phase kept across blocks so the sine is continuous - a phase
+           reset every block would itself be an audible discontinuity and
+           would invalidate the test. */
+        static float ph = 0.0f;
+        const float dph = 2.0f * (float)M_PI * 1000.0f / 48000.0f;
+
+        for (uint32_t i = 0; i < n; i++)
+        {
+            pcm[i] = (int16_t)(sinf(ph) * 20000.0f);
+            ph += dph;
+            if (ph > TWO_PI) ph -= TWO_PI;
+        }
+    }
+    else
+    {
+        USBD_AUDIO_DUPLEX_GetSpeakerAudio(&hUsbDeviceFS, pcm, n);
+    }
+
+    /* Every mode's TX function multiplies its input by mic_gain (1..200),
+       calibrated to boost a real microphone's typically weak analog swing
+       up to a usable modulation level. USB PCM audio is already at full
+       digital scale, so applying that same gain a second time massively
+       over-deviates the modulator. Dividing by mic_gain alone isn't
+       enough, though: at mic_gain=1 (its default, and what it's set to
+       right now) that division is a no-op, and confirmed on hardware via
+       telemetry - rx_adc_peak pinned at exactly 1.0, i.e. hard-clipping
+       the ADC representation, on every single block - a full-scale
+       digital PCM source has zero headroom once mapped 1:1 onto the ADC's
+       swing. That clipping's sharp edges is what was misread as "chopped"
+       on a waterfall: it's splattered FM deviation from a clipped
+       modulating signal, not a dropout (usb_spk_under was confirmed 0 the
+       entire time this was measured). USB_HEADROOM builds in real margin
+       independent of mic_gain, since PC-sourced digital audio routinely
+       sits near 0 dBFS in a way a real mic's raw signal never does;
+       mic_gain still works as an additional multiplier on top for
+       whoever wants it louder, up to where it clips again. */
+    const float USB_HEADROOM = 0.5f;   /* -6 dB before mic_gain is applied */
+    float inv_gain = USB_HEADROOM / mic_gain;
+    for (uint32_t i = 0; i < n; i++)
+    {
+        int32_t scaled = (int32_t)((float)pcm[i] * inv_gain);
+        if (scaled >  32767) scaled =  32767;
+        if (scaled < -32768) scaled = -32768;
+        usb_tx_buf[i] = pcm16_to_sample((int16_t)scaled);
+    }
+
+    return usb_tx_buf;
+}
+
+/* Call right after an RX process_block() writes its DAC slice: when
+   SRC_USB, send that audio to the PC as "microphone" input instead of
+   (not in addition to) DAC1 - mirroring it out both places would leave
+   the physical speaker always live regardless of the src setting, which
+   is exactly the "switching src does nothing audible" bug this fixes.
+   usb_audio_tx_inject() already replaces rather than mirrors on the TX
+   side; this makes RX symmetric with it. */
+volatile float    usb_mic_peak  = 0.0f;  /* peak |pcm|/32768 fed to the USB mic ring, since last report */
+volatile uint32_t usb_mic_calls = 0;     /* how many times this ran, since last report */
+
+/* Shared staging buffer for both functions below. They are mutually
+   exclusive in time - this one only runs from the RX branch (!tx_active),
+   usb_audio_feed_sidetone() only runs during CW tx_active - so one static
+   array safely serves both instead of two, since every static byte here
+   competes with FreeDV's OFDM/LDPC heap (bss growth has hung FreeDV
+   mode-switching before, confirmed on hardware). Sized for the larger of
+   the two callers: RX's buffered-mode block can run up to BLOCK_SIZE_MAX/2
+   samples; CW never exceeds BLOCK_SIZE_ANALOG/2. */
+static int16_t usb_mic_pcm[BLOCK_SIZE_MAX / 2];
+
+static void usb_audio_rx_capture(uint16_t *dac_slice, uint32_t n)
+{
+    if (audio_source != AUDIO_SRC_USB)
+        return;
+
+    usb_mic_calls++;
+
+    for (uint32_t i = 0; i < n; i++)
+    {
+        usb_mic_pcm[i] = sample_to_pcm16(dac_slice[i]);
+        dac_slice[i] = DAC_MID;
+        float mag = (usb_mic_pcm[i] < 0 ? -(float)usb_mic_pcm[i] : (float)usb_mic_pcm[i]) / 32768.0f;
+        if (mag > usb_mic_peak) usb_mic_peak = mag;
+    }
+    USBD_AUDIO_DUPLEX_FeedMic(&hUsbDeviceFS, usb_mic_pcm, n);
+}
+
+/* CW sidetone -> USB mic. usb_audio_rx_capture() above only runs from the RX
+   branch of the main loop, which tx_active skips entirely, so without this
+   an audio:usb operator hears nothing while keying even though the analog
+   DAC1/headphone jack has always carried the sidetone fine (see
+   audio_dma_start()). Mirrors usb_audio_rx_capture(): USB replaces the
+   analog jack rather than doubling it, so side_out is silenced here the
+   same way dac_slice is silenced there. */
+static void usb_audio_feed_sidetone(uint16_t *side_slice, uint32_t n)
+{
+    if (audio_source != AUDIO_SRC_USB)
+        return;
+
+    for (uint32_t i = 0; i < n; i++)
+    {
+        usb_mic_pcm[i] = sample_to_pcm16(side_slice[i]);
+        side_slice[i] = DAC_MID;
+    }
+    USBD_AUDIO_DUPLEX_FeedMic(&hUsbDeviceFS, usb_mic_pcm, n);
+}
+
+/* hmi.c toggles audio routing via BTN_ENTER without needing to know the
+   audio_src_t type - same arm's-length pattern it already uses for mode/
+   PTT/CW pitch via radio_set_mode()/radio_tx_on()/cw_set_pitch(). */
+int audio_source_is_usb(void) { return audio_source == AUDIO_SRC_USB; }
+void audio_source_toggle(void) { audio_source = (audio_source == AUDIO_SRC_USB) ? AUDIO_SRC_ANALOG : AUDIO_SRC_USB; }
+
 static void audio_dma_restart(void)
 {
     HAL_ADC_Stop_DMA(&hadc1);
@@ -1138,6 +1352,17 @@ static void audio_dma_start(void)
         HAL_DAC_Start_DMA(&hdac, DAC_CHANNEL_2, (uint32_t *)dac_buffer, dac_len, DAC_ALIGN_12B_R);
         if (MODE == MODE_CW)
             HAL_DAC_Start_DMA(&hdac, DAC_CHANNEL_1, (uint32_t *)sidetone_buffer, dac_len, DAC_ALIGN_12B_R);
+        else
+        {
+            /* Every other mode leaves DAC_OUT1 (headphone/speaker) with no
+               signal of its own on TX. HAL_DAC_Stop_DMA() above disabled
+               the channel outright, so the pin was floating into the LM386
+               stage - audible as a drone/hum picked up from TX-side
+               switching noise. Park it at a defined silent level instead
+               of leaving it undriven. */
+            HAL_DAC_Start(&hdac, DAC_CHANNEL_1);
+            HAL_DAC_SetValue(&hdac, DAC_CHANNEL_1, DAC_ALIGN_12B_R, DAC_MID);
+        }
         HAL_ADC_Start_DMA(&hadc2, (uint32_t *)adc_buffer, adc_len);
     }
     else
@@ -1244,11 +1469,19 @@ void radio_set_mode(int mode)
     if (mode_is_freedv(mode))
     {
         // 1600 and 2400A are different modems, so this reopens codec2 rather
-        // than just flushing what is buffered.
+        // than just flushing what is buffered. Bracketed with heap probes so
+        // a hang can be placed as "inside freedv_chain_init()'s allocation"
+        // (only the _before line shows up) vs. "after a clean open, once
+        // real decoding starts" (both lines show up, then it hangs later).
+        uart_kv("heap_before_open", (int)heap_largest_free());
+        uart_puts("\r\n");
+
         freedv_ok = (freedv_chain_init(chain_mode_for(mode)) == 0);
 
         uart_puts(freedv_ok ? "freedv: ready\r\n"
                             : "freedv: init FAILED\r\n");
+        uart_kv("heap_after_open", (int)heap_largest_free());
+        uart_puts("\r\n");
     }
     else if (freedv_ok)
     {
@@ -1278,6 +1511,7 @@ void freedv2400b_process_block(const uint16_t *in, uint16_t *out, int n)
     float *IQ_in     = &dsp_scratch[3 * SCRATCH_N];
     float *NCO_buf   = &dsp_scratch[5 * SCRATCH_N];
     float *IQ_mix    = &dsp_scratch[7 * SCRATCH_N];
+    float *nbfm_raw  = &dsp_scratch[9 * SCRATCH_N];   // FreeDV fallback audio, see below
 
     float adc_peak = 0.0f;
 
@@ -1337,6 +1571,12 @@ void freedv2400b_process_block(const uint16_t *in, uint16_t *out, int n)
     rx_rms  = sqrtf(sumsq / (float)n);
     rx_blocks++;
 
+    // Listen on plain NBFM until 2400B syncs, same idea (and same reason)
+    // as the SSB-mode fallback in ssb_process_block(): audio_buf is about
+    // to be overwritten with decoded speech or decoder noise, so save the
+    // discriminator output first and fall back to it if not synced.
+    memcpy(nbfm_raw, audio_buf, n * sizeof(float));
+
     if (freedv_ok)
     {
         uint32_t t0 = DWT->CYCCNT;
@@ -1348,6 +1588,9 @@ void freedv2400b_process_block(const uint16_t *in, uint16_t *out, int n)
         if (dt > rx_fdv_cycles_max)
             rx_fdv_cycles_max = dt;
     }
+
+    if (!freedv_ok || !freedv_chain_synced())
+        memcpy(audio_buf, nbfm_raw, n * sizeof(float));
 
     for (int i = 0; i < n; i++)
     {
@@ -1651,7 +1894,7 @@ void ssb_tx_process_block(const uint16_t *in, uint16_t *out, int n)
  * milliseconds long.
  * --------------------------------------------------------------------- */
 
-#define CW_MSG      "LB2S DE LA7LKA"
+#define CW_MSG      "LA7LKA DE LB2S LB2S LB2S"
 #define CW_UNITS    256                     /* dit units in the keyed message */
 #define CW_RAMP     240                     /* 5 ms edge at 48 kHz */
 
@@ -1979,7 +2222,11 @@ void am_tx_process_block(const uint16_t *in, uint16_t *out, int n)
  */
 static void tx_process_block(const uint16_t *in, uint16_t *out, uint16_t *side_out, int n)
 {
-    if (MODE == MODE_CW)                            cw_tx_process_block(out, side_out, n);
+    if (MODE == MODE_CW)
+    {
+        cw_tx_process_block(out, side_out, n);
+        usb_audio_feed_sidetone(side_out, n);
+    }
     else if (MODE == MODE_USB || MODE == MODE_LSB)  ssb_tx_process_block(in, out, n);
     else if (MODE == MODE_NBFM)                     nbfm_tx_process_block(in, out, n);
     else if (MODE == MODE_AM)                       am_tx_process_block(in, out, n);
@@ -2014,6 +2261,10 @@ int radio_tx_on(void)
 
     tx_rearm  = 1;
     tx_active = 1;
+    /* Nothing drains the USB speaker ring while receiving, so it holds
+       stale audio (and a read pointer left wherever the last transmission
+       stopped) by now - start this one from a clean cushion. */
+    USBD_AUDIO_DUPLEX_ResetSpeaker(&hUsbDeviceFS);
     audio_dma_restart();  /* mic-in ADC / IF-out DAC, deep ring if buffered */
     HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_SET);
     return 1;
@@ -2065,6 +2316,8 @@ static void console_help(void)
               "  tx            key the CW beacon\r\n"
               "  rx            back to receive\r\n"
               "  mic <n>       microphone gain, 1..200\r\n"
+              "  src [usb|analog]  audio routing: USB Audio class vs ADC/DAC pins\r\n"
+              "  tone          toggle firmware 1 kHz sine into the USB TX path (diagnostic)\r\n"
               "  amtone        toggle AM 1 kHz test tone (50%%)\r\n"
               "  debug [on|off] toggle continuous telemetry\r\n"
               "  wpm <n>       CW speed\r\n"
@@ -2150,6 +2403,22 @@ static void console_exec(char *line)
             uart_puts("\r\n");
         }
         else uart_puts("mic 1..200\r\n");
+    }
+    else if (str_eq(line, "src"))
+    {
+        if (str_eq(arg, "usb"))         audio_source = AUDIO_SRC_USB;
+        else if (str_eq(arg, "analog")) audio_source = AUDIO_SRC_ANALOG;
+        else if (*arg)                  { uart_puts("src usb|analog\r\n"); return; }
+        else audio_source = (audio_source == AUDIO_SRC_USB) ? AUDIO_SRC_ANALOG : AUDIO_SRC_USB;
+        uart_puts(audio_source == AUDIO_SRC_USB ? "audio src: USB\r\n" : "audio src: analog (ADC/DAC)\r\n");
+    }
+    else if (str_eq(line, "tone"))
+    {
+        extern volatile int usb_tx_testtone;
+        usb_tx_testtone = !usb_tx_testtone;
+        uart_puts(usb_tx_testtone
+                  ? "USB TX test tone ON - modulating a firmware 1 kHz sine, USB audio ignored\r\n"
+                  : "USB TX test tone off - back to real USB audio\r\n");
     }
     else if (str_eq(line, "wpm"))
     {
@@ -2331,6 +2600,8 @@ int main(void)
   MX_ADC2_Init();
   /* USER CODE BEGIN 2 */
 
+  MX_USB_DEVICE_Init();
+
   dsp_filters_init();
 
   block_size = block_size_for(MODE);
@@ -2417,6 +2688,14 @@ int main(void)
           for (uint32_t i = 0; i < n; i++)
             tx_mic[i] = adc_buffer[(tx_rd + i) % ADC_RING_LEN];
 
+          if (audio_source == AUDIO_SRC_USB)
+          {
+              int16_t pcm[BLOCK_SIZE_MAX / 2];
+              USBD_AUDIO_DUPLEX_GetSpeakerAudio(&hUsbDeviceFS, pcm, n);
+              for (uint32_t i = 0; i < n; i++)
+                  tx_mic[i] = pcm16_to_sample(pcm[i]);
+          }
+
           tx_rd = (tx_rd + n) % ADC_RING_LEN;
           freedv_tx_feed(tx_mic, n);
         }
@@ -2451,9 +2730,9 @@ int main(void)
         }
       }
       else if (dac_block_processing == 1)
-      { tx_process_block(&adc_buffer[0], &dac_buffer[0], &sidetone_buffer[0], n); dac_block_processing = 0; }
+      { tx_process_block(usb_audio_tx_source(&adc_buffer[0], n), &dac_buffer[0], &sidetone_buffer[0], n); dac_block_processing = 0; }
       else if (dac_block_processing == 2)
-      { tx_process_block(&adc_buffer[n], &dac_buffer[n], &sidetone_buffer[n], n); dac_block_processing = 0; }
+      { tx_process_block(usb_audio_tx_source(&adc_buffer[n], n), &dac_buffer[n], &sidetone_buffer[n], n); dac_block_processing = 0; }
     }
     else
     // RX path. Swap this with the nbfm_tx_process_block() block below to go
@@ -2461,11 +2740,16 @@ int main(void)
     if (mode_is_buffered(MODE))
     {
       /*
-       * Drain the ring as fast as it fills rather than once per DMA deadline,
-       * so a slow frame is caught up on afterwards instead of leaving a
-       * backlog that grows until the ring overruns. Output alternates between
-       * the DAC halves; if we are behind, the DAC briefly repeats what is
-       * already there, which is audible but costs no modem samples.
+       * Drain the ADC ring as fast as it fills rather than once per DMA
+       * deadline, so a slow frame is caught up on afterwards instead of
+       * leaving a backlog that grows until the ring overruns. Output
+       * alternates between the two DAC halves - but unlike the deep ADC
+       * ring, the RX DAC buffer is only block_size deep (audio_dma_start()
+       * only gives TX the deep ring), so a catch-up burst here has nowhere
+       * to write ahead into. Without checking where the DMA actually is,
+       * a burst of 2+ blocks in one pass can overwrite a half the DMA is
+       * still playing, audible as a skip/repeat - this is what the TX path
+       * above already guards against via dac_dma_pos(), just missing here.
        */
       static int dac_half = 0;
       uint32_t n = block_size / 2;
@@ -2480,7 +2764,22 @@ int main(void)
 
       while (adc_avail() >= n && guard--)
       {
+        /* Only safe to (re)write a half once the DMA has moved into the
+           other one - i.e. finished playing this one. If not, stop for now
+           and let the deep ADC ring hold the backlog instead; we'll catch
+           up next pass once real-time playback has made room.
+           Not dac_dma_pos() here - that one measures against DAC_RING_LEN,
+           the deep ring TX buffered mode uses, but RX's DAC DMA is only
+           block_size long (see audio_dma_start()), so it needs its own
+           position calculation against the length it was actually started
+           with. */
+        uint32_t play = block_size - __HAL_DMA_GET_COUNTER(hdac.DMA_Handle1);
+        int dac_half_free = dac_half ? (play < n) : (play >= n);
+        if (!dac_half_free)
+          break;
+
         process_block(&adc_buffer[adc_rd], &dac_buffer[dac_half ? n : 0], n);
+        usb_audio_rx_capture(&dac_buffer[dac_half ? n : 0], n);
         adc_rd = (adc_rd + n) % ADC_RING_LEN;
         dac_half ^= 1;
       }
@@ -2488,11 +2787,13 @@ int main(void)
     else if (block_ready == 1)
     {
       process_block(&adc_buffer[0], &dac_buffer[0], block_size/2);
+      usb_audio_rx_capture(&dac_buffer[0], block_size/2);
       block_ready = 0;
     }
     else if (block_ready == 2)
     {
       process_block(&adc_buffer[block_size/2], &dac_buffer[block_size/2], block_size/2);
+      usb_audio_rx_capture(&dac_buffer[block_size/2], block_size/2);
       block_ready = 0;
     }
 
@@ -2531,6 +2832,30 @@ int main(void)
         uart_kv("adc_x1000", (int)(rx_adc_peak * 1000.0f));
         uart_kv("peak_x1000", (int)(rx_peak * 1000.0f));
         uart_kv("rms_x1000", (int)(rx_rms * 1000.0f));
+        uart_kv("usb_mic_calls", (int)usb_mic_calls);
+        uart_kv("usb_mic_peak_x1000", (int)(usb_mic_peak * 1000.0f));
+        usb_mic_calls = 0;
+        usb_mic_peak  = 0.0f;
+        {
+            extern volatile uint32_t usb_spk_calls, usb_spk_underruns, usb_spk_avail, usb_spk_avail_min, usb_spk_rx_pkts, usb_spk_nonzero_pkts, usb_spk_laps;
+            extern volatile uint32_t usb_setcur_count, usb_setcur_last_unit, usb_setcur_last_value;
+            uart_kv("usb_spk_pkts", (int)usb_spk_rx_pkts);
+            uart_kv("usb_spk_nz", (int)usb_spk_nonzero_pkts);
+            uart_kv("usb_spk_calls", (int)usb_spk_calls);
+            uart_kv("usb_spk_under", (int)usb_spk_underruns);
+            uart_kv("usb_spk_avail", (int)usb_spk_avail);
+            uart_kv("usb_spk_avail_min", (int)usb_spk_avail_min);
+            uart_kv("usb_spk_laps", (int)usb_spk_laps);
+            uart_kv("usb_setcur_n", (int)usb_setcur_count);
+            uart_kv("usb_setcur_unit", (int)usb_setcur_last_unit);
+            uart_kv("usb_setcur_val", (int)usb_setcur_last_value);
+            usb_spk_rx_pkts      = 0;
+            usb_spk_nonzero_pkts = 0;
+            usb_spk_calls        = 0;
+            usb_spk_underruns    = 0;
+            usb_spk_avail_min    = 0xFFFFFFFFU;
+            usb_spk_laps         = 0;
+        }
         if (MODE == MODE_AM)
         {
             uart_kv("env_min_x1000", (int)(rx_env_min * 1000.0f));
@@ -2956,6 +3281,17 @@ static void MX_USB_OTG_FS_PCD_Init(void)
   hpcd_USB_OTG_FS.Instance = USB_OTG_FS;
   hpcd_USB_OTG_FS.Init.dev_endpoints = 6;
   hpcd_USB_OTG_FS.Init.speed = PCD_SPEED_FULL;
+  /* Tried DMA mode + multi-packet block arming (see git history) to give
+     the CPU more slack per isochronous service window, hoping to fix an
+     audio chopping report. Reverted: with DMA enabled, USBD_AD_DataOut()
+     never fired at all (usb_spk_pkts stuck at 0 on real hardware) - most
+     likely multi-packet isochronous DMA transfers on this core don't
+     tolerate a single short/irregular packet mid-block the way bulk
+     transfers do, silently stalling the whole block instead of completing
+     with whatever arrived. Back to slave mode (CPU copies each packet
+     inside the ISR), which is proven to reliably pass audio, chopping
+     issue notwithstanding - that's a smaller, still-open problem, not a
+     100% failure like DMA mode turned out to be. */
   hpcd_USB_OTG_FS.Init.dma_enable = DISABLE;
   hpcd_USB_OTG_FS.Init.phy_itface = PCD_PHY_EMBEDDED;
   hpcd_USB_OTG_FS.Init.Sof_enable = ENABLE;

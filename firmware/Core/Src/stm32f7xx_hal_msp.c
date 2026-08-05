@@ -687,6 +687,26 @@ void HAL_PCD_MspInit(PCD_HandleTypeDef* hpcd)
     __HAL_RCC_USB_OTG_FS_CLK_ENABLE();
     /* USER CODE BEGIN USB_OTG_FS_MspInit 1 */
 
+    /* This IRQ enable was missing from the original partial USB_OTG_FS
+       codegen pass (the peripheral/pins/clock were generated, but the
+       device never got past enumeration - control transfers all timed
+       out - because HAL_PCD_IRQHandler() never ran without it).
+
+       Priority raised from 5 to 0 (matching the DAC/ADC DMA streams,
+       MX_DMA_Init() further down in main.c) after realizing USB audio is
+       run in PCD "slave" mode, not DMA (dma_enable = DISABLE in
+       usbd_conf.c) - every isochronous packet's FIFO-to-RAM copy happens
+       inside this ISR, on the CPU's own time. At priority 5 it was the
+       lowest-priority interrupt in the system: every DMA stream (0) and
+       the OLED's I2C1 (1) could all preempt it. Isochronous service
+       windows are unforgiving - a delayed service call is a lost sample,
+       not just a late one, unlike a DMA circular buffer which tolerates
+       being serviced a bit late. This was invisible to every telemetry
+       counter added while chasing an audio chopping report, since a drop
+       at the hardware FIFO happens before any of our counters run. */
+    HAL_NVIC_SetPriority(OTG_FS_IRQn, 0, 0);
+    HAL_NVIC_EnableIRQ(OTG_FS_IRQn);
+
     /* USER CODE END USB_OTG_FS_MspInit 1 */
 
   }
@@ -720,6 +740,8 @@ void HAL_PCD_MspDeInit(PCD_HandleTypeDef* hpcd)
                           |USB_DP_Pin);
 
     /* USER CODE BEGIN USB_OTG_FS_MspDeInit 1 */
+
+    HAL_NVIC_DisableIRQ(OTG_FS_IRQn);
 
     /* USER CODE END USB_OTG_FS_MspDeInit 1 */
   }

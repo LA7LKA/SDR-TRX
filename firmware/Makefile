@@ -73,7 +73,15 @@ Core/Src/freedv_chain.c \
 Core/Src/oled.c \
 Core/Src/encoder.c \
 Core/Src/buttons.c \
-Core/Src/hmi.c
+Core/Src/hmi.c \
+USB_DEVICE/App/usb_device.c \
+USB_DEVICE/App/usbd_desc.c \
+USB_DEVICE/App/usbd_audio_if.c \
+USB_DEVICE/Target/usbd_conf.c \
+Middlewares/ST/STM32_USB_Device_Library/Core/Src/usbd_core.c \
+Middlewares/ST/STM32_USB_Device_Library/Core/Src/usbd_ctlreq.c \
+Middlewares/ST/STM32_USB_Device_Library/Core/Src/usbd_ioreq.c \
+Middlewares/ST/STM32_USB_Device_Library/Class/AUDIO_DUPLEX/Src/usbd_audio_duplex.c
 
 # codec2 / FreeDV library sources (mirrors CODEC2_SRCS in codec2/src/CMakeLists.txt)
 # Kept in its own variable so codec2 can be given its own compile flags below.
@@ -214,7 +222,11 @@ C_INCLUDES =  \
 -IDrivers/STM32F7xx_HAL_Driver/Inc/Legacy \
 -IDrivers/CMSIS/Device/ST/STM32F7xx/Include \
 -IDrivers/CMSIS/Include \
--IDrivers/CMSIS/DSP/Include 
+-IDrivers/CMSIS/DSP/Include \
+-IUSB_DEVICE/App \
+-IUSB_DEVICE/Target \
+-IMiddlewares/ST/STM32_USB_Device_Library/Core/Inc \
+-IMiddlewares/ST/STM32_USB_Device_Library/Class/AUDIO_DUPLEX/Inc
 
 
 # compile gcc flags

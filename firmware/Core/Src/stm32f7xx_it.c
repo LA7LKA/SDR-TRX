@@ -59,6 +59,7 @@ extern DMA_HandleTypeDef hdma_adc1;
 extern DMA_HandleTypeDef hdma_adc2;
 extern DMA_HandleTypeDef hdma_dac1;
 extern DMA_HandleTypeDef hdma_dac2;
+extern PCD_HandleTypeDef hpcd_USB_OTG_FS;
 extern I2C_HandleTypeDef hi2c1;
 /* USER CODE BEGIN EV */
 
@@ -244,6 +245,14 @@ void DMA2_Stream0_IRQHandler(void)
 void DMA2_Stream2_IRQHandler(void)
 {
   HAL_DMA_IRQHandler(&hdma_adc2);
+}
+
+/**
+  * @brief This function handles USB OTG FS global interrupt (USB Audio).
+  */
+void OTG_FS_IRQHandler(void)
+{
+  HAL_PCD_IRQHandler(&hpcd_USB_OTG_FS);
 }
 
 /**
