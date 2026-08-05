@@ -703,8 +703,23 @@ void HAL_PCD_MspInit(PCD_HandleTypeDef* hpcd)
        not just a late one, unlike a DMA circular buffer which tolerates
        being serviced a bit late. This was invisible to every telemetry
        counter added while chasing an audio chopping report, since a drop
-       at the hardware FIFO happens before any of our counters run. */
-    HAL_NVIC_SetPriority(OTG_FS_IRQn, 0, 0);
+       at the hardware FIFO happens before any of our counters run.
+
+       Lowered from 0 to 1, 2026-08-05: matching DMA rather than sitting
+       below it fixed the chopping, but on Cortex-M/NVIC, equal-priority
+       interrupts cannot preempt each other - whichever ISR is already
+       running blocks the other until it returns. That made USB and the
+       audio DMA streams able to delay each other with no preemption
+       either way, invisible unless the CPU is busy enough for the
+       collision to actually matter - suspected cause of a FreeDV 700D
+       receive hang that only happens once real decoding starts (700D's
+       LDPC decode is by far the heaviest CPU load here). Priority 1 keeps
+       USB above everything except DMA - still far better than the
+       priority-5 starvation above, and DMA's circular buffers tolerate a
+       bit of delay per this same comment - while no longer tying it with
+       the one thing that must never wait on USB. I2C1 below, at 2, so the
+       ordering stays strictly DMA > USB > I2C1 with no ties anywhere. */
+    HAL_NVIC_SetPriority(OTG_FS_IRQn, 1, 0);
     HAL_NVIC_EnableIRQ(OTG_FS_IRQn);
 
     /* USER CODE END USB_OTG_FS_MspInit 1 */

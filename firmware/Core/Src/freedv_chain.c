@@ -9,14 +9,71 @@
 #include "codec2_fifo.h"
 #include "freedv_api.h"
 
+extern void uart_puts(const char *s);
+extern void uart_flush_blocking(void);
+
 /*
  * Building codec2 with __EMBEDDED__ makes it call these instead of malloc()
  * directly, so the application decides where its memory comes from. Plain
  * newlib heap is fine here; _sbrk() already bounds it against the MSP stack.
+ *
+ * Instrumented 2026-08-05: run_ldpc_decoder()/init_c_v_nodes() in codec2's
+ * mpdecode_core.c call CALLOC() (-> codec2_calloc() here) once per decoded
+ * frame - potentially many times per frame for 700D's H_16200_9720 code,
+ * one CALLOC per c_node/v_node - not just once at freedv_open(). Easy to
+ * miss because the macro is uppercase, not literal calloc(). Every
+ * CALLOC()/MALLOC() call site in codec2 is followed by an unchecked
+ * assert(), and this build has no -DNDEBUG, so a failed allocation calls
+ * abort() -> _exit() -> the documented "while(1){}" in syscalls.c -
+ * indistinguishable from a silent hang with zero UART output. This is the
+ * only way to actually see a failure happen instead of continuing to guess
+ * at a FreeDV 700D receive hang that only shows up once real decoding
+ * starts.
  */
-void *codec2_malloc(size_t size)               { return malloc(size); }
-void *codec2_calloc(size_t nmemb, size_t size) { return calloc(nmemb, size); }
-void  codec2_free(void *ptr)                   { free(ptr); }
+static volatile uint32_t codec2_alloc_calls;
+static volatile uint32_t codec2_alloc_fails;
+
+static void uart_put_u32(uint32_t v)
+{
+    char buf[11];
+    int  i = 0;
+    if (v == 0) { uart_puts("0"); return; }
+    while (v > 0 && i < (int)sizeof(buf)) { buf[i++] = (char)('0' + (v % 10)); v /= 10; }
+    while (i > 0) { char c[2] = { buf[--i], 0 }; uart_puts(c); }
+}
+
+static void codec2_alloc_report_fail(const char *what, uint32_t bytes)
+{
+    codec2_alloc_fails++;
+    uart_puts("\r\n!!! codec2_");
+    uart_puts(what);
+    uart_puts(" FAILED size=");
+    uart_put_u32(bytes);
+    uart_puts(" call#");
+    uart_put_u32(codec2_alloc_calls);
+    uart_puts(" fails=");
+    uart_put_u32(codec2_alloc_fails);
+    uart_puts(" !!!\r\n");
+    uart_flush_blocking();
+}
+
+void *codec2_malloc(size_t size)
+{
+    codec2_alloc_calls++;
+    void *p = malloc(size);
+    if (p == NULL) codec2_alloc_report_fail("malloc", (uint32_t)size);
+    return p;
+}
+
+void *codec2_calloc(size_t nmemb, size_t size)
+{
+    codec2_alloc_calls++;
+    void *p = calloc(nmemb, size);
+    if (p == NULL) codec2_alloc_report_fail("calloc", (uint32_t)(nmemb * size));
+    return p;
+}
+
+void codec2_free(void *ptr) { free(ptr); }
 
 /* 48 kHz -> 8 kHz */
 #define DECIM_M      6

@@ -437,6 +437,20 @@ static void uart_pump(void)
         huart3.Instance->TDR = tx_ring[tx_rd++ & (TX_RING - 1)];
 }
 
+/* uart_pump() above only moves one byte per main-loop pass - fine for
+   telemetry, but useless for a diagnostic printed right before a crash that
+   never returns to the main loop. Blocks until the whole ring is actually
+   on the wire, not just queued. Exported for codec2_alloc_report_fail() in
+   freedv_chain.c, the one caller that needs a guarantee, not a best effort. */
+void uart_flush_blocking(void)
+{
+    while (tx_rd != tx_wr)
+    {
+        while (!(huart3.Instance->ISR & USART_ISR_TXE)) { }
+        huart3.Instance->TDR = tx_ring[tx_rd++ & (TX_RING - 1)];
+    }
+}
+
 void uart_puts(const char *s)
 {
     while (*s)
@@ -3181,9 +3195,13 @@ static void MX_I2C1_Init(void)
   // blocking transfer at I2C speeds stalls the main loop for tens of ms,
   // which is audible as a glitch in whatever audio block is due during that
   // stall. See oled.c - HAL_I2C_Master_Transmit_IT keeps the loop running.
-  HAL_NVIC_SetPriority(I2C1_EV_IRQn, 1, 0);
+  // Priority 2 (was 1), 2026-08-05: freed up 1 for USB (see
+  // stm32f7xx_hal_msp.c's OTG_FS_IRQn comment) so the ordering stays
+  // strictly DMA(0) > USB(1) > I2C1(2), no ties - a cosmetic, rate-capped
+  // OLED redraw can afford to lose a race it used to be tied in.
+  HAL_NVIC_SetPriority(I2C1_EV_IRQn, 2, 0);
   HAL_NVIC_EnableIRQ(I2C1_EV_IRQn);
-  HAL_NVIC_SetPriority(I2C1_ER_IRQn, 1, 0);
+  HAL_NVIC_SetPriority(I2C1_ER_IRQn, 2, 0);
   HAL_NVIC_EnableIRQ(I2C1_ER_IRQn);
 
   /* USER CODE END I2C1_Init 2 */
