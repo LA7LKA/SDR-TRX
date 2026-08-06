@@ -20,6 +20,9 @@ extern volatile uint32_t usb_spk_avail_min;
 extern volatile uint32_t usb_spk_rx_pkts;
 extern volatile uint32_t usb_spk_nonzero_pkts;
 extern volatile uint32_t usb_spk_laps;
+extern volatile uint32_t usb_mic_underruns;
+extern volatile uint32_t usb_mic_fade_ins;
+extern volatile uint32_t usb_mic_fade_outs;
 
 #define AUDIO_SAMPLE_FREQ(frq) \
   (uint8_t)(frq), (uint8_t)((frq) >> 8), (uint8_t)((frq) >> 16)
@@ -497,6 +500,46 @@ static uint8_t USBD_AD_SOF(USBD_HandleTypeDef *pdev)
   return (uint8_t)USBD_OK;
 }
 
+/* Shared between IsoINIncomplete() and DataIn() below - either can be the
+   one that crosses into or out of an underrun. Confirmed on hardware
+   2026-08-06: usb_mic_underruns telemetry shows the underrun itself is
+   small and clean - about 7-8 packets, only right at an RX/TX transition,
+   never during steady state either side - so the remaining "crackle" isn't
+   the underrun, it's that both of its edges are a hard cut between real
+   audio and silence. A step discontinuity in a PCM stream is audible as a
+   click regardless of whether the data on either side is individually
+   correct, same reason cw_tx_process_block() ramps its envelope with a
+   raised cosine rather than switching the tone on/off abruptly. Fading the
+   one packet on each side of an underrun - not the underrun itself, which
+   stays exactly as short as the guard above already makes it - removes the
+   discontinuity without changing how much silence is actually sent. */
+static uint8_t in_last_real_pkt[USBD_AD_PACKET_SZE];
+static uint8_t in_was_silent = 1U;   /* starts true: nothing sent yet */
+
+/* Scales 16-bit mono PCM (same little-endian layout as in_buf) by a gain
+   ramping linearly from 0 up to (n-1)/n (fade_in) or from (n-1)/n down to
+   0 (!fade_in) across the packet, and transmits it. Integer math only -
+   this runs in interrupt context on every packet at the edge of an
+   underrun, and the existing style in this file avoids anything heavier
+   than that here. */
+static void USBD_AD_MicTransmitRamped(USBD_HandleTypeDef *pdev, const uint8_t *src, uint8_t fade_in)
+{
+  static uint8_t pkt[USBD_AD_PACKET_SZE];
+  const uint32_t n = USBD_AD_PACKET_SZE / 2U;
+  uint32_t i;
+
+  for (i = 0U; i < n; i++)
+  {
+    int16_t  s      = (int16_t)((uint16_t)src[2U * i] | ((uint16_t)src[2U * i + 1U] << 8));
+    uint32_t step   = fade_in ? i : (n - 1U - i);
+    int32_t  scaled = ((int32_t)s * (int32_t)step) / (int32_t)(n - 1U);
+
+    pkt[2U * i]      = (uint8_t)((uint16_t)scaled & 0xFFU);
+    pkt[2U * i + 1U] = (uint8_t)(((uint16_t)scaled >> 8) & 0xFFU);
+  }
+  (void)USBD_LL_Transmit(pdev, USBD_AD_IN_EP, pkt, USBD_AD_PACKET_SZE);
+}
+
 static uint8_t USBD_AD_IsoINIncomplete(USBD_HandleTypeDef *pdev, uint8_t epnum)
 {
   USBD_AUDIO_DUPLEX_HandleTypeDef *haudio = (USBD_AUDIO_DUPLEX_HandleTypeDef *)pdev->pClassDataCmsit[pdev->classId];
@@ -511,11 +554,47 @@ static uint8_t USBD_AD_IsoINIncomplete(USBD_HandleTypeDef *pdev, uint8_t epnum)
      missed frame would otherwise end the mic stream permanently - DataIn()
      never fires again for a transfer that was killed rather than
      completed. Re-arm here so a dropped frame costs one packet, not the
-     whole session. */
+     whole session. Same underrun guard as DataIn() below - see there for
+     why. */
   if (epnum == (USBD_AD_IN_EP & 0x7FU))
   {
-    (void)USBD_LL_Transmit(pdev, USBD_AD_IN_EP, &haudio->in_buf[haudio->in_rd_ptr], USBD_AD_PACKET_SZE);
-    haudio->in_rd_ptr = (uint16_t)((haudio->in_rd_ptr + USBD_AD_PACKET_SZE) % USBD_AD_IN_RING_SZE);
+    uint16_t avail = (uint16_t)((haudio->in_wr_ptr + USBD_AD_IN_RING_SZE - haudio->in_rd_ptr) % USBD_AD_IN_RING_SZE);
+
+    if (avail >= USBD_AD_PACKET_SZE)
+    {
+      uint8_t *real = &haudio->in_buf[haudio->in_rd_ptr];
+
+      if (in_was_silent)
+      {
+        USBD_AD_MicTransmitRamped(pdev, real, 1U);
+        in_was_silent = 0U;
+        usb_mic_fade_ins++;
+      }
+      else
+      {
+        (void)USBD_LL_Transmit(pdev, USBD_AD_IN_EP, real, USBD_AD_PACKET_SZE);
+      }
+      for (uint32_t i = 0U; i < USBD_AD_PACKET_SZE; i++)
+      {
+        in_last_real_pkt[i] = real[i];
+      }
+      haudio->in_rd_ptr = (uint16_t)((haudio->in_rd_ptr + USBD_AD_PACKET_SZE) % USBD_AD_IN_RING_SZE);
+    }
+    else
+    {
+      if (in_was_silent)
+      {
+        static const uint8_t silence[USBD_AD_PACKET_SZE] = {0};
+        (void)USBD_LL_Transmit(pdev, USBD_AD_IN_EP, (uint8_t *)silence, USBD_AD_PACKET_SZE);
+      }
+      else
+      {
+        USBD_AD_MicTransmitRamped(pdev, in_last_real_pkt, 0U);
+        in_was_silent = 1U;
+        usb_mic_fade_outs++;
+      }
+      usb_mic_underruns++;
+    }
   }
 
   return (uint8_t)USBD_OK;
@@ -603,8 +682,59 @@ static uint8_t USBD_AD_DataIn(USBD_HandleTypeDef *pdev, uint8_t epnum)
      and eventually dropped the device. */
   if (epnum == (USBD_AD_IN_EP & 0x7FU))
   {
-    (void)USBD_LL_Transmit(pdev, USBD_AD_IN_EP, &haudio->in_buf[haudio->in_rd_ptr], USBD_AD_PACKET_SZE);
-    haudio->in_rd_ptr = (uint16_t)((haudio->in_rd_ptr + USBD_AD_PACKET_SZE) % USBD_AD_IN_RING_SZE);
+    /* This ISR is the sole reader of in_rd_ptr and fires roughly every
+       1 ms regardless of how often or how unevenly the app side calls
+       USBD_AUDIO_DUPLEX_FeedMic() - steady for non-buffered RX modes,
+       bursty for FreeDV's "drain as fast as it fills" pattern. Blindly
+       transmitting and advancing in_rd_ptr on every call, the way this
+       used to work, assumes the writer is always at least a packet
+       ahead; whenever it isn't - a burst-vs-steady mismatch right at a
+       mode switch, most likely - the reader walks into bytes nothing
+       has written yet and just keeps going, since nothing here ever
+       pulls it back once it's ahead of in_wr_ptr. Audible as a
+       persistent crackle that a one-time pointer reset doesn't fix,
+       since the underlying rate mismatch just recreates it. Checking
+       availability first and sending silence on a genuine underrun
+       mirrors the speaker side's own resync-on-read discipline (see
+       DataOut() above), just for the direction where this ISR, not the
+       app, is the reader. */
+    uint16_t avail = (uint16_t)((haudio->in_wr_ptr + USBD_AD_IN_RING_SZE - haudio->in_rd_ptr) % USBD_AD_IN_RING_SZE);
+
+    if (avail >= USBD_AD_PACKET_SZE)
+    {
+      uint8_t *real = &haudio->in_buf[haudio->in_rd_ptr];
+
+      if (in_was_silent)
+      {
+        USBD_AD_MicTransmitRamped(pdev, real, 1U);
+        in_was_silent = 0U;
+        usb_mic_fade_ins++;
+      }
+      else
+      {
+        (void)USBD_LL_Transmit(pdev, USBD_AD_IN_EP, real, USBD_AD_PACKET_SZE);
+      }
+      for (uint32_t i = 0U; i < USBD_AD_PACKET_SZE; i++)
+      {
+        in_last_real_pkt[i] = real[i];
+      }
+      haudio->in_rd_ptr = (uint16_t)((haudio->in_rd_ptr + USBD_AD_PACKET_SZE) % USBD_AD_IN_RING_SZE);
+    }
+    else
+    {
+      if (in_was_silent)
+      {
+        static const uint8_t silence[USBD_AD_PACKET_SZE] = {0};
+        (void)USBD_LL_Transmit(pdev, USBD_AD_IN_EP, (uint8_t *)silence, USBD_AD_PACKET_SZE);
+      }
+      else
+      {
+        USBD_AD_MicTransmitRamped(pdev, in_last_real_pkt, 0U);
+        in_was_silent = 1U;
+        usb_mic_fade_outs++;
+      }
+      usb_mic_underruns++;
+    }
   }
 
   return (uint8_t)USBD_OK;
@@ -624,10 +754,34 @@ void USBD_AUDIO_DUPLEX_FeedMic(USBD_HandleTypeDef *pdev, const int16_t *pcm16, u
 {
   USBD_AUDIO_DUPLEX_HandleTypeDef *haudio = (USBD_AUDIO_DUPLEX_HandleTypeDef *)pdev->pClassDataCmsit[pdev->classId];
   uint32_t i;
+  uint32_t queued, free_bytes, max_samples;
 
   if (haudio == NULL)
   {
     return;
+  }
+
+  /* A single call writing more samples than are actually free in the ring
+     wraps in_wr_ptr back past bytes from the SAME call that the IN
+     endpoint ISR hasn't sent yet - self-overwriting mid-write, guaranteed
+     corruption rather than just lost audio. Confirmed on hardware
+     2026-08-06: every buffered/FreeDV RX mode (1600/2400B/700D/700E, all
+     BLOCK_SIZE 3840 -> 1920-sample/3840-byte calls) exceeds
+     USBD_AD_IN_RING_SZE (1536 bytes) by more than 2x, every single call -
+     "just garble" on FreeDV1600 was this, not a subtle timing issue; SSB's
+     much smaller 256-sample calls never hit it, which is why this went
+     unnoticed through every earlier test. Cap to what's actually free
+     right now (not just the ring's total size - some may already be
+     queued), same discipline GetSpeakerAudio() already applies on the
+     speaker side. The trailing samples are lost same as any other
+     underrun - a real but far smaller problem than corrupting what was
+     already queued to go out. */
+  queued      = (uint32_t)((haudio->in_wr_ptr + USBD_AD_IN_RING_SZE - haudio->in_rd_ptr) % USBD_AD_IN_RING_SZE);
+  free_bytes  = USBD_AD_IN_RING_SZE - queued;
+  max_samples = free_bytes / 2U;
+  if (n_samples > max_samples)
+  {
+    n_samples = max_samples;
   }
 
   for (i = 0; i < n_samples; i++)
@@ -648,6 +802,20 @@ volatile uint32_t usb_spk_rx_pkts   = 0;   /* OUT packets accepted from the host
 volatile uint32_t usb_spk_nonzero_pkts = 0; /* of those, how many had real (non-zero) content */
 volatile uint32_t usb_spk_laps      = 0;   /* times the reader fell behind enough to skip forward */
 
+/* Mic (IN) path: DataIn()/IsoINIncomplete() are the reader here (unlike the
+   speaker side, where the app is the reader) - see both below. */
+volatile uint32_t usb_mic_underruns = 0;   /* packet sends where nothing new had been written yet */
+/* Diagnostic pair added 2026-08-06 chasing a hum reported specifically on
+   usb-source activation, alternating every other switch - not explained by
+   usb_mic_underruns alone (that only says *how many* packets underran, not
+   how many separate fade-out/fade-in *cycles* that was, which is what a
+   per-switch ResetMic() should produce exactly one of each time). Counted
+   separately from usb_mic_underruns instead of inferred from it so a switch
+   that produces an unusually long or repeated fade sequence is visible
+   directly, without having to guess it from a raw packet count. */
+volatile uint32_t usb_mic_fade_ins  = 0;   /* IN packets sent as a fade-in ramp (silence -> real) */
+volatile uint32_t usb_mic_fade_outs = 0;   /* IN packets sent as a fade-out ramp (real -> silence) */
+
 void USBD_AUDIO_DUPLEX_ResetSpeaker(USBD_HandleTypeDef *pdev)
 {
   USBD_AUDIO_DUPLEX_HandleTypeDef *haudio = (USBD_AUDIO_DUPLEX_HandleTypeDef *)pdev->pClassDataCmsit[pdev->classId];
@@ -661,6 +829,51 @@ void USBD_AUDIO_DUPLEX_ResetSpeaker(USBD_HandleTypeDef *pdev)
      was consuming, and begin a fresh cushion from the writer's position. */
   haudio->out_rd_enable = 0U;
   haudio->out_rd_ptr    = haudio->out_wr_ptr;
+}
+
+void USBD_AUDIO_DUPLEX_ResetMic(USBD_HandleTypeDef *pdev)
+{
+  USBD_AUDIO_DUPLEX_HandleTypeDef *haudio = (USBD_AUDIO_DUPLEX_HandleTypeDef *)pdev->pClassDataCmsit[pdev->classId];
+
+  if (haudio == NULL)
+  {
+    return;
+  }
+
+  /* Mic-direction counterpart to ResetSpeaker() above, same idea in
+     reverse: the app writes in_wr_ptr, the IN endpoint ISR reads
+     in_rd_ptr, so realigning rd to wr drops whatever was queued and has
+     the ISR start sending fresh samples from "now" instead of whatever
+     was left over from before a mode or source change.
+
+     Root cause found 2026-08-06 for a small, exactly-periodic amplitude
+     spike (period == USBD_AD_IN_RING_SZE, once per ring lap) heard only
+     over audio:usb, in every mode, that no amount of resetting elsewhere
+     ever fixed: in_wr_ptr only stays a multiple of 2 (one sample at a
+     time), but the ISR reads USBD_AD_PACKET_SZE *linear* bytes from
+     &in_buf[in_rd_ptr] via USBD_LL_Transmit(), which has no concept of
+     the ring wrapping - safe only when in_rd_ptr is itself a multiple of
+     USBD_AD_PACKET_SZE (every multiple-of-PACKET_SZE offset has a full
+     packet's room to the physical end of in_buf, since RING_SZE is
+     itself a multiple of PACKET_SZE). Plain `in_rd_ptr = in_wr_ptr`
+     lands rd on a non-multiple-of-PACKET_SZE offset almost every time (1
+     in 48 odds of landing clean), and that misalignment is permanent
+     from then on - in_rd_ptr only ever advances by whole packets, so its
+     remainder mod PACKET_SZE never changes again until the next reset
+     re-rolls it to some other arbitrary value. Once misaligned, one read
+     per lap walks PACKET_SZE bytes past the physical end of in_buf[] and
+     into whatever struct field follows it (in_wr_ptr/in_rd_ptr, then
+     control) - audible as a small spike (those fields' raw values,
+     interpreted as PCM) followed by a run of near-silence (control's
+     mostly-zero bytes), recurring like clockwork every RING_SZE bytes.
+     Confirmed against a clean, unmodulated capture: exactly-768-sample
+     (RING_SZE) spacing, sample-accurate, for as long as the ring stays
+     misaligned - which by the above is "since whenever it last got
+     reset", i.e. effectively always. Rounding down to the packet grid
+     here means every reset - mode switch, PTT, source switch - leaves
+     in_rd_ptr aligned, and once aligned it stays aligned forever after,
+     since every subsequent advance is a whole multiple of PACKET_SZE. */
+  haudio->in_rd_ptr = (uint16_t)(haudio->in_wr_ptr - (haudio->in_wr_ptr % USBD_AD_PACKET_SZE));
 }
 
 uint32_t USBD_AUDIO_DUPLEX_GetSpeakerAudio(USBD_HandleTypeDef *pdev, int16_t *pcm16, uint32_t n_samples)

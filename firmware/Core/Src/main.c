@@ -1089,6 +1089,7 @@ void nbfm_init(float if_freq_hz, float fs_hz);
 static void ssb_tx_init(void);
 extern volatile int am_testtone;
 static void audio_dma_start(void);
+static void audio_dma_restart(void);
 extern volatile int tx_active;
 
 /*
@@ -1270,18 +1271,28 @@ volatile uint32_t usb_mic_calls = 0;     /* how many times this ran, since last 
 
 /* Shared staging buffer for both functions below. They are mutually
    exclusive in time - this one only runs from the RX branch (!tx_active),
-   usb_audio_feed_sidetone() only runs during CW tx_active - so one static
+   usb_audio_mic_tx_update() only runs during tx_active - so one static
    array safely serves both instead of two, since every static byte here
    competes with FreeDV's OFDM/LDPC heap (bss growth has hung FreeDV
-   mode-switching before, confirmed on hardware). Sized for the larger of
-   the two callers: RX's buffered-mode block can run up to BLOCK_SIZE_MAX/2
-   samples; CW never exceeds BLOCK_SIZE_ANALOG/2. */
+   mode-switching before, confirmed on hardware). Sized for the largest
+   caller on either side: RX's and FreeDV TX's buffered-mode blocks can
+   both run up to BLOCK_SIZE_MAX/2 samples. */
 static int16_t usb_mic_pcm[BLOCK_SIZE_MAX / 2];
 
 static void usb_audio_rx_capture(uint16_t *dac_slice, uint32_t n)
 {
     if (audio_source != AUDIO_SRC_USB)
+    {
+        /* USB isn't the active listening path - mute it explicitly rather
+           than leave stale content in the ring for the IN endpoint ISR to
+           keep replaying to whatever's listening over USB. dac_slice is
+           deliberately left untouched: the analog jack still needs the
+           real demodulated audio process_block() already wrote there. */
+        for (uint32_t i = 0; i < n; i++)
+            usb_mic_pcm[i] = 0;
+        USBD_AUDIO_DUPLEX_FeedMic(&hUsbDeviceFS, usb_mic_pcm, n);
         return;
+    }
 
     usb_mic_calls++;
 
@@ -1289,28 +1300,47 @@ static void usb_audio_rx_capture(uint16_t *dac_slice, uint32_t n)
     {
         usb_mic_pcm[i] = sample_to_pcm16(dac_slice[i]);
         dac_slice[i] = DAC_MID;
+        /* Peak tracking (usb_mic_peak) temporarily disabled, 2026-08-06:
+           isolating whether this per-sample float math - the one thing
+           that runs on the USB branch and not on analog's plain
+           zero-fill branch - is connected to a regularly-spaced
+           small-amplitude-spike report. Re-enable once that's answered
+           either way. */
+#if 0
         float mag = (usb_mic_pcm[i] < 0 ? -(float)usb_mic_pcm[i] : (float)usb_mic_pcm[i]) / 32768.0f;
         if (mag > usb_mic_peak) usb_mic_peak = mag;
+#endif
     }
     USBD_AUDIO_DUPLEX_FeedMic(&hUsbDeviceFS, usb_mic_pcm, n);
 }
 
-/* CW sidetone -> USB mic. usb_audio_rx_capture() above only runs from the RX
-   branch of the main loop, which tx_active skips entirely, so without this
-   an audio:usb operator hears nothing while keying even though the analog
-   DAC1/headphone jack has always carried the sidetone fine (see
-   audio_dma_start()). Mirrors usb_audio_rx_capture(): USB replaces the
-   analog jack rather than doubling it, so side_out is silenced here the
-   same way dac_slice is silenced there. */
-static void usb_audio_feed_sidetone(uint16_t *side_slice, uint32_t n)
+/* USB mic (IN) direction during TX. CW's sidetone is the only thing with
+   legitimate content to send over USB - mirrors the analog DAC1/headphone
+   jack, which also only carries live audio during CW TX (see
+   audio_dma_start()). Every other case (any non-CW mode, or CW while
+   audio_source is still analog) explicitly mutes USB instead of leaving
+   it fed by whatever was last written before TX started, same principle
+   as the DAC1 mute fix in audio_dma_start() applied to the USB direction.
+   side_slice may be NULL when the caller has no monitor buffer at all
+   (FreeDV TX) - safe, since it's only read in the MODE_CW branch, which
+   FreeDV can never take. Called once per TX block from the call sites
+   below rather than from inside tx_process_block() itself, so CW's real
+   content and every other mode's silence each go through exactly one
+   FeedMic() call, never both. */
+static void usb_audio_mic_tx_update(uint16_t *side_slice, uint32_t n)
 {
-    if (audio_source != AUDIO_SRC_USB)
-        return;
-
-    for (uint32_t i = 0; i < n; i++)
+    if (MODE == MODE_CW && audio_source == AUDIO_SRC_USB)
     {
-        usb_mic_pcm[i] = sample_to_pcm16(side_slice[i]);
-        side_slice[i] = DAC_MID;
+        for (uint32_t i = 0; i < n; i++)
+        {
+            usb_mic_pcm[i] = sample_to_pcm16(side_slice[i]);
+            side_slice[i] = DAC_MID;
+        }
+    }
+    else
+    {
+        for (uint32_t i = 0; i < n; i++)
+            usb_mic_pcm[i] = 0;
     }
     USBD_AUDIO_DUPLEX_FeedMic(&hUsbDeviceFS, usb_mic_pcm, n);
 }
@@ -1319,7 +1349,61 @@ static void usb_audio_feed_sidetone(uint16_t *side_slice, uint32_t n)
    audio_src_t type - same arm's-length pattern it already uses for mode/
    PTT/CW pitch via radio_set_mode()/radio_tx_on()/cw_set_pitch(). */
 int audio_source_is_usb(void) { return audio_source == AUDIO_SRC_USB; }
-void audio_source_toggle(void) { audio_source = (audio_source == AUDIO_SRC_USB) ? AUDIO_SRC_ANALOG : AUDIO_SRC_USB; }
+
+/* Single place audio_source ever changes - the console `src` command used
+   to set it directly too, bypassing this. Nothing drains the USB speaker
+   (OUT) ring while it isn't the active TX source (during RX regardless of
+   audio_source, or during TX while audio_source is analog), so it can
+   accumulate a real backlog - same staleness problem radio_tx_on() already
+   resets for on every TX start, just reachable from a second trigger: a
+   mid-session source switch, including mid-TX. Resetting unconditionally
+   rather than only when switching *to* USB is deliberate - trivially cheap
+   when the ring was already idle (see USBD_AUDIO_DUPLEX_ResetSpeaker()),
+   and avoids having to reason about which direction actually needs it. */
+static void audio_source_set(audio_src_t src)
+{
+    if (src == audio_source)
+        return;
+
+    audio_source = src;
+    USBD_AUDIO_DUPLEX_ResetSpeaker(&hUsbDeviceFS);
+    USBD_AUDIO_DUPLEX_ResetMic(&hUsbDeviceFS);
+    /* radio_apply_mode() and radio_tx_on()/radio_tx_off() all flush filter/
+       NCO/CW-BPF history via dsp_filters_init() before restarting DMA - a
+       plain source switch never did, so switching usb->analog->usb (no mode
+       or PTT in between) kept whatever filter state was running from before.
+       Confirmed 2026-08-06 the hum this was chasing is heard over usb only
+       (not analog) and alternates - present, then gone, then back again on
+       the switch after that - so this alone isn't the full story, but it's
+       still a real gap other switch paths already close, so keeping it. */
+    dsp_filters_init();
+    /* Needed now so the DAC1-DMA-vs-parked choice in audio_dma_start()'s
+       RX branch actually takes effect on a source switch, not just on the
+       next mode change or PTT - those already call this, a plain source
+       switch never did before. */
+    audio_dma_restart();
+
+    /* Diagnostic, 2026-08-06: precise per-switch snapshot to pin down the
+       alternating usb-only hum above - cumulative counters (not reset here,
+       only the periodic report owns that) so consecutive switches can be
+       told apart by their deltas even faster than the ~1 s report cadence. */
+    {
+        extern volatile uint32_t usb_mic_underruns, usb_mic_fade_ins, usb_mic_fade_outs;
+        static uint32_t switch_n = 0;
+        switch_n++;
+        uart_kv("src_switch_n", (int)switch_n);
+        uart_kv("src_switch_to", (int)src);   /* AUDIO_SRC_USB/ANALOG - see enum */
+        uart_kv("mic_under_at_sw", (int)usb_mic_underruns);
+        uart_kv("mic_fadein_at_sw", (int)usb_mic_fade_ins);
+        uart_kv("mic_fadeout_at_sw", (int)usb_mic_fade_outs);
+        uart_puts("\r\n");
+    }
+}
+
+void audio_source_toggle(void)
+{
+    audio_source_set(audio_source == AUDIO_SRC_USB ? AUDIO_SRC_ANALOG : AUDIO_SRC_USB);
+}
 
 static void audio_dma_restart(void)
 {
@@ -1381,7 +1465,29 @@ static void audio_dma_start(void)
     }
     else
     {
-        HAL_DAC_Start_DMA(&hdac, DAC_CHANNEL_1, (uint32_t *)dac_buffer, dac_len, DAC_ALIGN_12B_R);
+        /* Experiment, 2026-08-06: audio_source == USB used to still run
+           DAC1's DMA continuously, playing whatever usb_audio_rx_capture()
+           had just silenced dac_buffer to - same content either way (the
+           headphone jack is silent regardless), but DAC1's own DMA
+           completion interrupts kept firing at a steady, regular rate the
+           whole time, chasing a report of small, *regularly-spaced*
+           amplitude spikes specifically over audio:usb. Parking DAC1 at a
+           static value instead of DMA-ing it removes that interrupt
+           activity entirely rather than just muting its content - same
+           pattern as the TX-mute fix above, applied here to test whether
+           DAC1's DMA cadence was ever interacting with the USB audio
+           pipeline's timing. Zero effect on what's actually heard either
+           way, since the analog jack is silent under audio:usb regardless
+           of which of these two runs. */
+        if (audio_source == AUDIO_SRC_USB)
+        {
+            HAL_DAC_Start(&hdac, DAC_CHANNEL_1);
+            HAL_DAC_SetValue(&hdac, DAC_CHANNEL_1, DAC_ALIGN_12B_R, DAC_MID);
+        }
+        else
+        {
+            HAL_DAC_Start_DMA(&hdac, DAC_CHANNEL_1, (uint32_t *)dac_buffer, dac_len, DAC_ALIGN_12B_R);
+        }
         HAL_ADC_Start_DMA(&hadc1, (uint32_t *)adc_buffer, adc_len);
     }
 }
@@ -1461,12 +1567,23 @@ static uint32_t heap_largest_free(void)
     return lo;
 }
 
-void radio_set_mode(int mode)
+/*
+ * Does the actual work of switching to `mode`: stop DMA, apply the new
+ * mode/block_size, resync the USB mic ring, reflush filter state, open or
+ * reset the FreeDV chain, restart DMA. Split out from radio_set_mode() so
+ * main() can run this exact same sequence once at boot - unconditionally,
+ * bypassing radio_set_mode()'s no-op guard below - instead of hand-picking
+ * a subset of it. A partial boot-time replica (just dsp_filters_init() +
+ * audio_dma_start(), then a second attempt adding ResetSpeaker()/ResetMic()
+ * on top, both tried 2026-08-06) left small, regularly-spaced amplitude
+ * spikes heard only over audio:usb unaffected, even though a live mode or
+ * source switch fixes them permanently - so whatever actually fixes it
+ * needs the *whole* sequence a live switch runs, not a hand-picked part of
+ * it, hence running the real thing at boot instead of guessing again.
+ */
+static void radio_apply_mode(int mode)
 {
     uint32_t want = block_size_for(mode);
-
-    if (mode == MODE && want == block_size)
-        return;
 
     HAL_ADC_Stop_DMA(&hadc1);
     HAL_ADC_Stop_DMA(&hadc2);
@@ -1475,6 +1592,13 @@ void radio_set_mode(int mode)
 
     MODE       = mode;
     block_size = want;
+
+    // Every mode can have a different block size/cadence, which can leave
+    // the USB mic ring's read/write pointers in a relationship the IN
+    // endpoint ISR's pacing never recovers from on its own - heard as
+    // continuous crackle until src is toggled away and back. Cheap and
+    // harmless to call unconditionally, same as ResetSpeaker() already is.
+    USBD_AUDIO_DUPLEX_ResetMic(&hUsbDeviceFS);
 
     // Filter history and the FreeDV resamplers hold audio from the old mode at
     // the old block size, so flush both rather than let it bleed through.
@@ -1503,6 +1627,16 @@ void radio_set_mode(int mode)
     }
 
     audio_dma_start();
+}
+
+void radio_set_mode(int mode)
+{
+    uint32_t want = block_size_for(mode);
+
+    if (mode == MODE && want == block_size)
+        return;
+
+    radio_apply_mode(mode);
 }
 
 /*
@@ -2236,11 +2370,7 @@ void am_tx_process_block(const uint16_t *in, uint16_t *out, int n)
  */
 static void tx_process_block(const uint16_t *in, uint16_t *out, uint16_t *side_out, int n)
 {
-    if (MODE == MODE_CW)
-    {
-        cw_tx_process_block(out, side_out, n);
-        usb_audio_feed_sidetone(side_out, n);
-    }
+    if (MODE == MODE_CW)                            cw_tx_process_block(out, side_out, n);
     else if (MODE == MODE_USB || MODE == MODE_LSB)  ssb_tx_process_block(in, out, n);
     else if (MODE == MODE_NBFM)                     nbfm_tx_process_block(in, out, n);
     else if (MODE == MODE_AM)                       am_tx_process_block(in, out, n);
@@ -2277,8 +2407,22 @@ int radio_tx_on(void)
     tx_active = 1;
     /* Nothing drains the USB speaker ring while receiving, so it holds
        stale audio (and a read pointer left wherever the last transmission
-       stopped) by now - start this one from a clean cushion. */
+       stopped) by now - start this one from a clean cushion. Mic (IN) gets
+       the same treatment: usb_audio_rx_capture() (RX) and
+       usb_audio_mic_tx_update() (TX) are different producers with
+       different cadences, and this is the one transition that swaps
+       between them on every single PTT press - the biggest cadence change
+       the mic ring's underrun guard has to absorb, so it's the one most
+       worth starting clean rather than leaving to recover on its own. */
     USBD_AUDIO_DUPLEX_ResetSpeaker(&hUsbDeviceFS);
+    USBD_AUDIO_DUPLEX_ResetMic(&hUsbDeviceFS);
+    /* radio_set_mode() already does this when switching modes, but not
+       here - and the RX front end (Hilbert transform, NCO, pre-demod
+       filters in dsp_filters_init()) is shared across every mode, not
+       mode-specific, so a plain RX/TX switch left it just as able to
+       carry state across the ADC restart below as a mode switch would.
+       Cheap to call unconditionally like the resets above. */
+    dsp_filters_init();
     audio_dma_restart();  /* mic-in ADC / IF-out DAC, deep ring if buffered */
     HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_SET);
     return 1;
@@ -2288,6 +2432,8 @@ void radio_tx_off(void)
 {
     tx_active = 0;
     if (mode_is_freedv(MODE) && freedv_ok) freedv_chain_set_tx(0);
+    USBD_AUDIO_DUPLEX_ResetMic(&hUsbDeviceFS);  /* same reasoning as radio_tx_on() - back to usb_audio_rx_capture() as the producer now */
+    dsp_filters_init();    /* see radio_tx_on() - same gap, same fix */
     audio_dma_restart();   /* back to IF-in ADC / audio-out DAC */
     HAL_GPIO_WritePin(LD3_GPIO_Port, LD3_Pin, GPIO_PIN_RESET);
 }
@@ -2420,10 +2566,10 @@ static void console_exec(char *line)
     }
     else if (str_eq(line, "src"))
     {
-        if (str_eq(arg, "usb"))         audio_source = AUDIO_SRC_USB;
-        else if (str_eq(arg, "analog")) audio_source = AUDIO_SRC_ANALOG;
+        if (str_eq(arg, "usb"))         audio_source_set(AUDIO_SRC_USB);
+        else if (str_eq(arg, "analog")) audio_source_set(AUDIO_SRC_ANALOG);
         else if (*arg)                  { uart_puts("src usb|analog\r\n"); return; }
-        else audio_source = (audio_source == AUDIO_SRC_USB) ? AUDIO_SRC_ANALOG : AUDIO_SRC_USB;
+        else audio_source_toggle();
         uart_puts(audio_source == AUDIO_SRC_USB ? "audio src: USB\r\n" : "audio src: analog (ADC/DAC)\r\n");
     }
     else if (str_eq(line, "tone"))
@@ -2616,10 +2762,21 @@ int main(void)
 
   MX_USB_DEVICE_Init();
 
-  dsp_filters_init();
-
-  block_size = block_size_for(MODE);
-  audio_dma_start();
+  /* Chasing small, regularly-spaced amplitude spikes heard only over
+     audio:usb, in every mode, that a live radio_set_mode()/audio_source_set()
+     call fixes *permanently* (confirmed: does not come back, so this isn't
+     drift needing a periodic correction - something is wrong with the state
+     boot alone reaches, corrected once a live switch runs). Two hand-picked
+     boot-time replicas (dsp_filters_init()+audio_dma_start() alone, then
+     +ResetSpeaker()/ResetMic() on top, both 2026-08-06) made no difference,
+     so guessing at which piece(s) of a live switch matter isn't working -
+     radio_apply_mode() is the exact body radio_set_mode() runs, extracted so
+     boot can run the real thing unconditionally instead of a subset of it.
+     ResetSpeaker() is added after it to also cover the one thing
+     audio_source_set() does beyond that (radio_apply_mode() itself has no
+     reason to touch the speaker/TX ring). */
+  radio_apply_mode(MODE);
+  USBD_AUDIO_DUPLEX_ResetSpeaker(&hUsbDeviceFS);
 
   //Start TIM6
   HAL_TIM_Base_Start(&htim6);
@@ -2734,6 +2891,7 @@ int main(void)
           {
             uint32_t t0 = DWT->CYCCNT;
             freedv_tx_produce(&dac_buffer[dac_wr], n);
+            usb_audio_mic_tx_update(NULL, n);  // FreeDV TX has no sidetone-like monitor buffer
             uint32_t dt = DWT->CYCCNT - t0;
             if (dt > rx_cycles_max)     rx_cycles_max     = dt;
             if (dt > rx_fdv_cycles_max) rx_fdv_cycles_max = dt;
@@ -2744,9 +2902,17 @@ int main(void)
         }
       }
       else if (dac_block_processing == 1)
-      { tx_process_block(usb_audio_tx_source(&adc_buffer[0], n), &dac_buffer[0], &sidetone_buffer[0], n); dac_block_processing = 0; }
+      {
+          tx_process_block(usb_audio_tx_source(&adc_buffer[0], n), &dac_buffer[0], &sidetone_buffer[0], n);
+          usb_audio_mic_tx_update(&sidetone_buffer[0], n);
+          dac_block_processing = 0;
+      }
       else if (dac_block_processing == 2)
-      { tx_process_block(usb_audio_tx_source(&adc_buffer[n], n), &dac_buffer[n], &sidetone_buffer[n], n); dac_block_processing = 0; }
+      {
+          tx_process_block(usb_audio_tx_source(&adc_buffer[n], n), &dac_buffer[n], &sidetone_buffer[n], n);
+          usb_audio_mic_tx_update(&sidetone_buffer[n], n);
+          dac_block_processing = 0;
+      }
     }
     else
     // RX path. Swap this with the nbfm_tx_process_block() block below to go
@@ -2850,6 +3016,15 @@ int main(void)
         uart_kv("usb_mic_peak_x1000", (int)(usb_mic_peak * 1000.0f));
         usb_mic_calls = 0;
         usb_mic_peak  = 0.0f;
+        {
+            extern volatile uint32_t usb_mic_underruns, usb_mic_fade_ins, usb_mic_fade_outs;
+            uart_kv("usb_mic_under", (int)usb_mic_underruns);
+            uart_kv("usb_mic_fadein", (int)usb_mic_fade_ins);
+            uart_kv("usb_mic_fadeout", (int)usb_mic_fade_outs);
+            usb_mic_underruns  = 0;
+            usb_mic_fade_ins   = 0;
+            usb_mic_fade_outs  = 0;
+        }
         {
             extern volatile uint32_t usb_spk_calls, usb_spk_underruns, usb_spk_avail, usb_spk_avail_min, usb_spk_rx_pkts, usb_spk_nonzero_pkts, usb_spk_laps;
             extern volatile uint32_t usb_setcur_count, usb_setcur_last_unit, usb_setcur_last_value;
@@ -3299,18 +3474,20 @@ static void MX_USB_OTG_FS_PCD_Init(void)
   hpcd_USB_OTG_FS.Instance = USB_OTG_FS;
   hpcd_USB_OTG_FS.Init.dev_endpoints = 6;
   hpcd_USB_OTG_FS.Init.speed = PCD_SPEED_FULL;
-  /* Tried DMA mode + multi-packet block arming (see git history) to give
-     the CPU more slack per isochronous service window, hoping to fix an
-     audio chopping report. Reverted: with DMA enabled, USBD_AD_DataOut()
-     never fired at all (usb_spk_pkts stuck at 0 on real hardware) - most
-     likely multi-packet isochronous DMA transfers on this core don't
-     tolerate a single short/irregular packet mid-block the way bulk
-     transfers do, silently stalling the whole block instead of completing
-     with whatever arrived. Back to slave mode (CPU copies each packet
-     inside the ISR), which is proven to reliably pass audio, chopping
-     issue notwithstanding - that's a smaller, still-open problem, not a
-     100% failure like DMA mode turned out to be. */
-  hpcd_USB_OTG_FS.Init.dma_enable = DISABLE;
+  /* Second DMA experiment, 2026-08-06 - see git history for the first.
+     That one changed two things at once (DMA + multi-packet block
+     arming) and failed 100%: USBD_AD_DataOut() never fired at all
+     (usb_spk_pkts stuck at 0), most likely because multi-packet
+     isochronous DMA transfers on this core don't tolerate a short/
+     irregular packet mid-block the way bulk transfers do. This time only
+     dma_enable changes - every endpoint still arms exactly one packet at
+     a time, the same pattern already proven reliable in slave mode - to
+     find out whether DMA transfer itself works on this core at all,
+     without also re-testing the multi-packet arming already known to
+     fail. If DataIn()/DataOut() don't fire (usb_spk_pkts/usb_mic_calls
+     stuck at 0, same signature as before), the answer is no regardless
+     of arming granularity, and slave mode is what to keep. */
+  hpcd_USB_OTG_FS.Init.dma_enable = ENABLE;
   hpcd_USB_OTG_FS.Init.phy_itface = PCD_PHY_EMBEDDED;
   hpcd_USB_OTG_FS.Init.Sof_enable = ENABLE;
   hpcd_USB_OTG_FS.Init.low_power_enable = DISABLE;

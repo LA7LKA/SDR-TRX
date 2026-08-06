@@ -65,7 +65,28 @@ extern "C" {
    the write pointer always landing on a packet boundary with a full
    packet's room left to the end of the buffer. */
 #define USBD_AD_OUT_RING_SZE            (USBD_AD_PACKET_SZE * 32U)   /* ~32 ms */
-#define USBD_AD_IN_RING_SZE             (USBD_AD_PACKET_SZE * 16U)   /* ~16.7 ms */
+
+/* IN ring: grown from 16 to 48 packets 2026-08-06 to stop
+   USBD_AUDIO_DUPLEX_FeedMic() self-overwriting mid-write - it takes a
+   whole RX block in one call with no bounds checking against the ring,
+   and every buffered/FreeDV RX mode (1600/2400B/700D/700E, all
+   BLOCK_SIZE 3840) feeds 1920 samples/3840 bytes per call, more than
+   double the 16-packet ring's 1536-byte capacity - confirmed on hardware
+   as "just garble"/chopped audio on FreeDV1600 (SSB's much smaller
+   256-sample calls never hit it, which is why this went unnoticed for so
+   long). That corruption bug is fixed separately in usbd_audio_duplex.c
+   (FeedMic() now caps to actual free space instead of wrapping into
+   unset data) and is independent of ring size - reverted back to 16
+   packets same day after 48 (4608 B, +3072 B) reproduced a hard
+   fault/MemManage fault starting FreeDV1600 decode, in *both* src usb
+   and src analog - so it wasn't specific to the USB code path, it was
+   heap/stack pressure the extra 3 KB tipped over, hitting some
+   memory-safety gap in codec2's 1600 path (a different specific bug
+   from 700D's LDPC fragmentation, since 1600 never touches that decoder
+   at all).
+   Getting FreeDV RX-over-USB genuinely clean, not just non-corrupted,
+   needs that gap found first - a ring-size change alone isn't enough. */
+#define USBD_AD_IN_RING_SZE             (USBD_AD_PACKET_SZE * 16U)   /* ~16 ms */
 
 #define USBD_AD_CONFIG_DESC_SIZ         0xC0U   /* 192 bytes, see .c for the byte-by-byte tally */
 
@@ -145,6 +166,12 @@ uint32_t USBD_AUDIO_DUPLEX_GetSpeakerAudio(USBD_HandleTypeDef *pdev, int16_t *pc
 /* Drop any audio that piled up while nothing was consuming and start a
    fresh cushion - call when transmit begins. */
 void USBD_AUDIO_DUPLEX_ResetSpeaker(USBD_HandleTypeDef *pdev);
+
+/* Mic-direction counterpart: drop whatever's queued for the IN endpoint
+   and have it start sending fresh samples from "now" - call whenever
+   something on the app side could otherwise leave it out of step, e.g. a
+   mode or audio-source change. */
+void USBD_AUDIO_DUPLEX_ResetMic(USBD_HandleTypeDef *pdev);
 
 #ifdef __cplusplus
 }
