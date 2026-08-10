@@ -96,12 +96,16 @@ USBD_StatusTypeDef USBD_LL_Init(USBD_HandleTypeDef *pdev)
   pdev->pData = &hpcd_USB_OTG_FS;
 
   /* USB_OTG_FS total FIFO RAM is 320 32-bit words (1.25 KB) - stay under
-     that. RX shared by EP0-OUT + EP1-OUT (speaker, 96 B/ms ISO packets).
-     TX0 is EP0 control IN. TX1 is EP1 IN (mic, also 96 B/ms), sized for
-     ~2 packets of headroom. No EP2 in use, so no third FIFO. */
+     that. RX shared by EP0-OUT + EP1-OUT (speaker, 96 B/ms ISO packets) +
+     EP3-OUT (CDC bulk). TX0 is EP0 control IN. TX1 is EP1 IN (mic, also
+     96 B/ms), sized for ~2 packets of headroom. TX2 is EP2 IN (CDC
+     interrupt notifications, tiny/infrequent). TX3 is EP3 IN (CDC bulk).
+     256 + 32 + 16 = 304/320 words used, 16 spare. */
   HAL_PCDEx_SetRxFiFo(&hpcd_USB_OTG_FS, 0x80);
   HAL_PCDEx_SetTxFiFo(&hpcd_USB_OTG_FS, 0, 0x40);
   HAL_PCDEx_SetTxFiFo(&hpcd_USB_OTG_FS, 1, 0x40);
+  HAL_PCDEx_SetTxFiFo(&hpcd_USB_OTG_FS, 2, 0x20);
+  HAL_PCDEx_SetTxFiFo(&hpcd_USB_OTG_FS, 3, 0x10);
 
   return USBD_OK;
 }

@@ -1,5 +1,6 @@
 /**
-  * USB Audio Class 1.0, bidirectional (mono, 16-bit, 48 kHz fixed).
+  * USB Audio Class 1.0, bidirectional (mono, 16-bit, 48 kHz fixed) PLUS a
+  * CDC-ACM virtual serial port, merged into one composite USB class.
   *
   * Hand-written, not a CubeMX/ST-template class: ST's stock USBD_AUDIO
   * (Middlewares/ST/STM32_USB_Device_Library/Class/AUDIO) only implements
@@ -16,6 +17,20 @@
   * the STM32's TIM6 and the USB host's clock is not corrected (no rate
   * feedback implemented) - fine for bench-test sessions, would need a
   * feedback/adaptive endpoint for long unattended runs.
+  *
+  * CDC-ACM (IF3 Communication + IF4 Data, grouped by an IAD) was added
+  * for future CAT radio control over the same USB cable, rather than a
+  * second physical link. It is merged into this same class - not a second
+  * registered USBD class - because ST's CompositeBuilder middleware
+  * (usbd_composite_builder.c) has no support for a bidirectional custom
+  * audio class, and USE_USBD_COMPOSITE is unset in this project's
+  * usbd_conf.h, which makes USBD_CoreFindIF()/USBD_CoreFindEP() always
+  * return 0 - Setup/DataIn/DataOut already dispatch to whichever single
+  * class is registered regardless of interface/endpoint number, so a
+  * hand-rolled merged class is the only approach that fits how this core
+  * is currently configured. The CDC transport here is a stub: it moves
+  * bytes in and out over USB with no protocol behind it. The actual CAT
+  * command set (hamlib rig backend) is separate, in-progress work.
   */
 #ifndef __USBD_AUDIO_DUPLEX_H
 #define __USBD_AUDIO_DUPLEX_H
@@ -35,6 +50,24 @@ extern "C" {
 
 #define USBD_AD_OUT_EP                  0x01U   /* speaker: PC -> radio TX audio in  */
 #define USBD_AD_IN_EP                   0x81U   /* mic:     radio RX audio -> PC     */
+
+/* CDC-ACM (CAT control), added alongside the audio endpoints above - see
+   the header comment for why this lives in the same class rather than a
+   second registered USBD class. EP2/EP3 chosen to avoid the EP1 pair
+   audio already owns; both directions of EP3 are conventional for
+   CDC-ACM (interrupt notifications get their own EP2 IN). */
+#define USBD_AD_CDC_CMD_EP              0x82U   /* notifications: radio -> PC (unused content, required by class) */
+#define USBD_AD_CDC_OUT_EP              0x03U   /* CAT commands:  PC -> radio */
+#define USBD_AD_CDC_IN_EP               0x83U   /* CAT replies:   radio -> PC */
+
+#define USBD_AD_CDC_CMD_PACKET_SZE      0x08U   /* interrupt IN, notification only */
+#define USBD_AD_CDC_DATA_PACKET_SZE     0x40U   /* 64 B, max full-speed bulk */
+
+/* CAT traffic is short ASCII command/reply lines, nothing like the audio
+   ring sizes above - 128 B is generous headroom without competing with
+   the FreeDV heap margin documented above. */
+#define USBD_AD_CDC_RX_RING_SZE         128U
+#define USBD_AD_CDC_TX_RING_SZE         128U
 
 /* Note: multi-packet block arming (arm N packets per transfer so the CPU
    gets an N ms window instead of 1 ms) was tried together with
@@ -88,7 +121,7 @@ extern "C" {
    needs that gap found first - a ring-size change alone isn't enough. */
 #define USBD_AD_IN_RING_SZE             (USBD_AD_PACKET_SZE * 16U)   /* ~16 ms */
 
-#define USBD_AD_CONFIG_DESC_SIZ         0xC0U   /* 192 bytes, see .c for the byte-by-byte tally */
+#define USBD_AD_CONFIG_DESC_SIZ         0x102U  /* 258 bytes: 192 audio + 66 CDC-ACM, see .c for the byte-by-byte tally */
 
 typedef enum
 {
@@ -133,6 +166,31 @@ typedef struct
   uint16_t in_rd_ptr;
 
   USBD_AD_ControlTypeDef control;
+
+  /* CDC-ACM (CAT control) state. Lives directly in this struct, not a
+     separate malloc, because USBD_static_malloc() (usbd_conf.c) is a
+     single fixed-size buffer sized off sizeof(this struct). RX: bulk OUT
+     packets land in cdc_rx_pkt, then get pushed byte-by-byte into
+     cdc_rx_ring for cat_poll() to drain from the main loop. TX: cat_puts()
+     pushes into cdc_tx_ring; cdc_tx_busy gates one outstanding bulk IN
+     transfer at a time, cleared when DataIn() sees it complete. */
+  uint8_t  cdc_rx_pkt[USBD_AD_CDC_DATA_PACKET_SZE] __attribute__((aligned(4)));
+  uint8_t  cdc_rx_ring[USBD_AD_CDC_RX_RING_SZE];
+  uint16_t cdc_rx_wr_ptr;
+  uint16_t cdc_rx_rd_ptr;
+
+  uint8_t  cdc_tx_ring[USBD_AD_CDC_TX_RING_SZE];
+  uint16_t cdc_tx_wr_ptr;
+  uint16_t cdc_tx_rd_ptr;
+  uint8_t  cdc_tx_busy;
+  uint8_t  cdc_tx_pkt[USBD_AD_CDC_DATA_PACKET_SZE] __attribute__((aligned(4)));
+
+  /* SET_LINE_CODING / GET_LINE_CODING wire format (7 bytes: 4-byte baud
+     rate LE, 1 stop-bits, 1 parity, 1 data-bits) - stored raw and just
+     echoed back on GET_LINE_CODING, since there's no real UART behind
+     this port to actually configure. */
+  uint8_t  cdc_line_coding[7];
+  uint8_t  cdc_line_state;   /* SET_CONTROL_LINE_STATE bitmap (DTR/RTS) */
 } USBD_AUDIO_DUPLEX_HandleTypeDef;
 
 typedef struct
@@ -172,6 +230,26 @@ void USBD_AUDIO_DUPLEX_ResetSpeaker(USBD_HandleTypeDef *pdev);
    something on the app side could otherwise leave it out of step, e.g. a
    mode or audio-source change. */
 void USBD_AUDIO_DUPLEX_ResetMic(USBD_HandleTypeDef *pdev);
+
+/* CDC-ACM (CAT control) transport. Byte-oriented, no line/framing
+   behavior - the caller (main.c's cat_poll()/cat_exec()) owns command
+   framing, same division of responsibility as uart_puts()/console_poll()
+   already have for the debug console. Safe to call from the main loop
+   only (not ISR context) - mirrors the audio ring-buffer calls above. */
+
+/* Pull up to maxlen received bytes into buf; returns the number copied
+   (0 if nothing is queued). */
+uint32_t USBD_AD_CDC_Read(USBD_HandleTypeDef *pdev, uint8_t *buf, uint32_t maxlen);
+
+/* Queue len bytes for transmission (0 < len <= USBD_AD_CDC_TX_RING_SZE).
+   Returns the number actually queued - may be less than len if the ring
+   is full; the caller should retry the remainder on a later call. */
+uint32_t USBD_AD_CDC_Write(USBD_HandleTypeDef *pdev, const uint8_t *buf, uint32_t len);
+
+/* Drains cdc_tx_ring into an outstanding bulk IN transfer when none is
+   already in flight - call every main-loop iteration so queued bytes
+   actually get sent instead of sitting in the ring. */
+void USBD_AD_CDC_Poll(USBD_HandleTypeDef *pdev);
 
 #ifdef __cplusplus
 }

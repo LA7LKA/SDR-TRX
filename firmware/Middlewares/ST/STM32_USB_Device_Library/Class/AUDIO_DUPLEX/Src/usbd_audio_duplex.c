@@ -24,6 +24,13 @@ extern volatile uint32_t usb_mic_underruns;
 extern volatile uint32_t usb_mic_fade_ins;
 extern volatile uint32_t usb_mic_fade_outs;
 
+/* CDC class-specific request codes (PSTN subclass, CDC120 spec table 13) -
+   defined locally rather than pulling in ST's usbd_cdc.h, since this isn't
+   ST's CDC class and only these three requests are needed. */
+#define CDC_SET_LINE_CODING              0x20U
+#define CDC_GET_LINE_CODING              0x21U
+#define CDC_SET_CONTROL_LINE_STATE       0x22U
+
 #define AUDIO_SAMPLE_FREQ(frq) \
   (uint8_t)(frq), (uint8_t)((frq) >> 8), (uint8_t)((frq) >> 16)
 
@@ -68,7 +75,7 @@ __ALIGN_BEGIN static uint8_t USBD_AD_CfgDesc[USBD_AD_CONFIG_DESC_SIZ] __ALIGN_EN
   /* ---- Configuration descriptor (9) ---- */
   0x09, USB_DESC_TYPE_CONFIGURATION,
   LOBYTE(USBD_AD_CONFIG_DESC_SIZ), HIBYTE(USBD_AD_CONFIG_DESC_SIZ),
-  0x03,                                  /* bNumInterfaces: AC + AS-out + AS-in */
+  0x05,                                  /* bNumInterfaces: AC + AS-out + AS-in + CDC-Comm + CDC-Data */
   0x01,                                  /* bConfigurationValue */
   0x00,                                  /* iConfiguration */
 #if (USBD_SELF_POWERED == 1U)
@@ -217,6 +224,64 @@ __ALIGN_BEGIN static uint8_t USBD_AD_CfgDesc[USBD_AD_CONFIG_DESC_SIZ] __ALIGN_EN
   /* Class-specific AS ISO IN endpoint (7) */
   0x07, 0x25, 0x01,
   0x00, 0x00, 0x00, 0x00,
+
+  /* ================= CDC-ACM (CAT control) ================= */
+
+  /* Interface Association Descriptor, groups IF3+IF4 (8) */
+  0x08, 0x0B,                            /* bLength, IAD */
+  0x03,                                  /* bFirstInterface = IF3 */
+  0x02,                                  /* bInterfaceCount = 2 */
+  0x02, 0x02, 0x01,                      /* bFunctionClass=CDC, SubClass=ACM, Protocol=AT */
+  0x00,                                  /* iFunction */
+
+  /* ---- IF3: CDC Communication interface (9) ---- */
+  0x09, USB_DESC_TYPE_INTERFACE,
+  0x03, 0x00, 0x01,                      /* bInterfaceNumber, bAlternateSetting, bNumEndpoints */
+  0x02, 0x02, 0x01, 0x00,                /* Class=CDC, SubClass=ACM, Protocol=AT, iInterface */
+
+  /* CDC Header functional (5) */
+  0x05, 0x24, 0x00,                      /* bLength, CS_INTERFACE, HEADER */
+  0x10, 0x01,                            /* bcdCDC 1.10 */
+
+  /* CDC Call Management functional (5) */
+  0x05, 0x24, 0x01,                      /* CALL_MANAGEMENT */
+  0x00,                                  /* bmCapabilities: none (no call handling) */
+  0x04,                                  /* bDataInterface = IF4 */
+
+  /* CDC Abstract Control Management functional (4) */
+  0x04, 0x24, 0x02,                      /* ACM */
+  0x02,                                  /* bmCapabilities: Set/Get Line Coding, Set Control Line State */
+
+  /* CDC Union functional (5) */
+  0x05, 0x24, 0x06,                      /* UNION */
+  0x03,                                  /* bMasterInterface = IF3 */
+  0x04,                                  /* bSlaveInterface0 = IF4 */
+
+  /* Notification endpoint, interrupt IN (7) - content unused, required by class */
+  0x07, USB_DESC_TYPE_ENDPOINT,
+  USBD_AD_CDC_CMD_EP,
+  0x03,                                  /* bmAttributes: Interrupt */
+  LOBYTE(USBD_AD_CDC_CMD_PACKET_SZE), HIBYTE(USBD_AD_CDC_CMD_PACKET_SZE),
+  0x10,                                  /* bInterval: 16 ms */
+
+  /* ---- IF4: CDC Data interface (9) ---- */
+  0x09, USB_DESC_TYPE_INTERFACE,
+  0x04, 0x00, 0x02,                      /* bInterfaceNumber, bAlternateSetting, bNumEndpoints */
+  0x0A, 0x00, 0x00, 0x00,                /* Class=CDC-Data, SubClass, Protocol, iInterface */
+
+  /* Bulk OUT endpoint (7): PC -> radio, CAT commands */
+  0x07, USB_DESC_TYPE_ENDPOINT,
+  USBD_AD_CDC_OUT_EP,
+  0x02,                                  /* bmAttributes: Bulk */
+  LOBYTE(USBD_AD_CDC_DATA_PACKET_SZE), HIBYTE(USBD_AD_CDC_DATA_PACKET_SZE),
+  0x00,
+
+  /* Bulk IN endpoint (7): radio -> PC, CAT replies */
+  0x07, USB_DESC_TYPE_ENDPOINT,
+  USBD_AD_CDC_IN_EP,
+  0x02,
+  LOBYTE(USBD_AD_CDC_DATA_PACKET_SZE), HIBYTE(USBD_AD_CDC_DATA_PACKET_SZE),
+  0x00,
 };
 
 __ALIGN_BEGIN static uint8_t USBD_AD_DeviceQualifierDesc[USB_LEN_DEV_QUALIFIER_DESC] __ALIGN_END =
@@ -261,6 +326,21 @@ static uint8_t USBD_AD_Init(USBD_HandleTypeDef *pdev, uint8_t cfgidx)
   pdev->ep_in[USBD_AD_IN_EP & 0xFU].is_used = 1U;
   pdev->ep_in[USBD_AD_IN_EP & 0xFU].bInterval = USBD_AD_BINTERVAL;
 
+  /* CDC-ACM (CAT control) endpoints. Unlike the audio ISOC endpoints,
+     these have no alt-setting gate - CDC's Data interface has only one
+     alt-setting (0), so it's safe to open and prime here at Init time,
+     no SET_INTERFACE handshake needed first. */
+  (void)USBD_LL_OpenEP(pdev, USBD_AD_CDC_CMD_EP, USBD_EP_TYPE_INTR, USBD_AD_CDC_CMD_PACKET_SZE);
+  pdev->ep_in[USBD_AD_CDC_CMD_EP & 0xFU].is_used = 1U;
+
+  (void)USBD_LL_OpenEP(pdev, USBD_AD_CDC_OUT_EP, USBD_EP_TYPE_BULK, USBD_AD_CDC_DATA_PACKET_SZE);
+  pdev->ep_out[USBD_AD_CDC_OUT_EP & 0xFU].is_used = 1U;
+
+  (void)USBD_LL_OpenEP(pdev, USBD_AD_CDC_IN_EP, USBD_EP_TYPE_BULK, USBD_AD_CDC_DATA_PACKET_SZE);
+  pdev->ep_in[USBD_AD_CDC_IN_EP & 0xFU].is_used = 1U;
+
+  (void)USBD_LL_PrepareReceive(pdev, USBD_AD_CDC_OUT_EP, haudio->cdc_rx_pkt, USBD_AD_CDC_DATA_PACKET_SZE);
+
   haudio->out_offset = USBD_AD_OFFSET_UNKNOWN;
 
   if (((USBD_AUDIO_DUPLEX_ItfTypeDef *)pdev->pUserData[pdev->classId])->Init(USBD_AD_FREQ) != 0)
@@ -297,6 +377,13 @@ static uint8_t USBD_AD_DeInit(USBD_HandleTypeDef *pdev, uint8_t cfgidx)
   (void)USBD_LL_CloseEP(pdev, USBD_AD_IN_EP);
   pdev->ep_in[USBD_AD_IN_EP & 0xFU].is_used = 0U;
 
+  (void)USBD_LL_CloseEP(pdev, USBD_AD_CDC_CMD_EP);
+  pdev->ep_in[USBD_AD_CDC_CMD_EP & 0xFU].is_used = 0U;
+  (void)USBD_LL_CloseEP(pdev, USBD_AD_CDC_OUT_EP);
+  pdev->ep_out[USBD_AD_CDC_OUT_EP & 0xFU].is_used = 0U;
+  (void)USBD_LL_CloseEP(pdev, USBD_AD_CDC_IN_EP);
+  pdev->ep_in[USBD_AD_CDC_IN_EP & 0xFU].is_used = 0U;
+
   if (pdev->pClassDataCmsit[pdev->classId] != NULL)
   {
     ((USBD_AUDIO_DUPLEX_ItfTypeDef *)pdev->pUserData[pdev->classId])->DeInit();
@@ -322,18 +409,45 @@ static uint8_t USBD_AD_Setup(USBD_HandleTypeDef *pdev, USBD_SetupReqTypedef *req
   switch (req->bmRequest & USB_REQ_TYPE_MASK)
   {
     case USB_REQ_TYPE_CLASS:
-      switch (req->bRequest)
+      if (LOBYTE(req->wIndex) == 3U)
       {
-        case 0x81U: /* GET_CUR */
-          AD_REQ_GetCurrent(pdev, req);
-          break;
-        case 0x01U: /* SET_CUR */
-          AD_REQ_SetCurrent(pdev, req);
-          break;
-        default:
-          USBD_CtlError(pdev, req);
-          ret = USBD_FAIL;
-          break;
+        /* CDC Communication interface (CAT control) - see the header
+           comment for why this is dispatched here rather than a second
+           registered class. No real UART behind this port, so these just
+           store/echo the wire-format bytes rather than configuring
+           anything. */
+        switch (req->bRequest)
+        {
+          case CDC_SET_LINE_CODING:
+            (void)USBD_CtlPrepareRx(pdev, haudio->cdc_line_coding, (uint16_t)sizeof(haudio->cdc_line_coding));
+            break;
+          case CDC_GET_LINE_CODING:
+            (void)USBD_CtlSendData(pdev, haudio->cdc_line_coding, (uint16_t)sizeof(haudio->cdc_line_coding));
+            break;
+          case CDC_SET_CONTROL_LINE_STATE:
+            haudio->cdc_line_state = (uint8_t)req->wValue;
+            break;
+          default:
+            USBD_CtlError(pdev, req);
+            ret = USBD_FAIL;
+            break;
+        }
+      }
+      else
+      {
+        switch (req->bRequest)
+        {
+          case 0x81U: /* GET_CUR */
+            AD_REQ_GetCurrent(pdev, req);
+            break;
+          case 0x01U: /* SET_CUR */
+            AD_REQ_SetCurrent(pdev, req);
+            break;
+          default:
+            USBD_CtlError(pdev, req);
+            ret = USBD_FAIL;
+            break;
+        }
       }
       break;
 
@@ -355,8 +469,10 @@ static uint8_t USBD_AD_Setup(USBD_HandleTypeDef *pdev, USBD_SetupReqTypedef *req
         case USB_REQ_GET_INTERFACE:
           if (pdev->dev_state == USBD_STATE_CONFIGURED)
           {
+            /* CDC interfaces (3, 4) have only alt-setting 0. */
             uint8_t cur = (LOBYTE(req->wIndex) == 1U) ? (uint8_t)haudio->out_alt_setting
-                                                        : (uint8_t)haudio->in_alt_setting;
+                        : (LOBYTE(req->wIndex) == 2U) ? (uint8_t)haudio->in_alt_setting
+                        : 0U;
             (void)USBD_CtlSendData(pdev, &cur, 1U);
           }
           else
@@ -659,6 +775,37 @@ static uint8_t USBD_AD_DataOut(USBD_HandleTypeDef *pdev, uint8_t epnum)
 
     (void)USBD_LL_PrepareReceive(pdev, USBD_AD_OUT_EP, &haudio->out_buf[haudio->out_wr_ptr], USBD_AD_PACKET_SZE);
   }
+  else if (epnum == (USBD_AD_CDC_OUT_EP & 0x7FU))
+  {
+    /* CAT commands from the host. Same cap-to-free-space discipline as
+       USBD_AUDIO_DUPLEX_FeedMic() below - drop trailing bytes on overrun
+       rather than wrapping the write pointer past unread data. CAT command
+       lines are short and this is a slow, human/software-paced channel
+       compared to audio, so an overrun here would mean cat_poll() isn't
+       being called often enough, not normal operation. */
+    uint16_t queued, free_bytes, i;
+
+    got = (uint16_t)USBD_LL_GetRxDataSize(pdev, epnum);
+    if (got > USBD_AD_CDC_DATA_PACKET_SZE)
+    {
+      got = USBD_AD_CDC_DATA_PACKET_SZE;
+    }
+
+    queued     = (uint16_t)((haudio->cdc_rx_wr_ptr + USBD_AD_CDC_RX_RING_SZE - haudio->cdc_rx_rd_ptr) % USBD_AD_CDC_RX_RING_SZE);
+    free_bytes = (uint16_t)(USBD_AD_CDC_RX_RING_SZE - queued);
+    if (got > free_bytes)
+    {
+      got = free_bytes;
+    }
+
+    for (i = 0U; i < got; i++)
+    {
+      haudio->cdc_rx_ring[haudio->cdc_rx_wr_ptr] = haudio->cdc_rx_pkt[i];
+      haudio->cdc_rx_wr_ptr = (uint16_t)((haudio->cdc_rx_wr_ptr + 1U) % USBD_AD_CDC_RX_RING_SZE);
+    }
+
+    (void)USBD_LL_PrepareReceive(pdev, USBD_AD_CDC_OUT_EP, haudio->cdc_rx_pkt, USBD_AD_CDC_DATA_PACKET_SZE);
+  }
 
   return (uint8_t)USBD_OK;
 }
@@ -735,6 +882,16 @@ static uint8_t USBD_AD_DataIn(USBD_HandleTypeDef *pdev, uint8_t epnum)
       }
       usb_mic_underruns++;
     }
+  }
+  else if (epnum == (USBD_AD_CDC_IN_EP & 0x7FU))
+  {
+    /* Previous CAT reply packet finished sending. Just clear the busy
+       gate - USBD_AD_CDC_Poll(), called from the main loop, is what
+       actually starts the next transfer from cdc_tx_ring, keeping USB
+       transmit calls out of ISR context for this slow, non-real-time
+       channel (unlike the mic path above, which must stay ISR-driven to
+       hit every 1 ms frame). */
+    haudio->cdc_tx_busy = 0U;
   }
 
   return (uint8_t)USBD_OK;
@@ -979,4 +1136,81 @@ uint32_t USBD_AUDIO_DUPLEX_GetSpeakerAudio(USBD_HandleTypeDef *pdev, int16_t *pc
   }
 
   return got;
+}
+
+/* CDC-ACM (CAT control) transport - see header comment. Called from the
+   main loop only, never ISR context (unlike the audio ring functions
+   above, which are split between app and ISR ownership by design). */
+
+uint32_t USBD_AD_CDC_Read(USBD_HandleTypeDef *pdev, uint8_t *buf, uint32_t maxlen)
+{
+  USBD_AUDIO_DUPLEX_HandleTypeDef *haudio = (USBD_AUDIO_DUPLEX_HandleTypeDef *)pdev->pClassDataCmsit[pdev->classId];
+  uint32_t avail, n, i;
+
+  if (haudio == NULL)
+  {
+    return 0U;
+  }
+
+  avail = (uint32_t)((haudio->cdc_rx_wr_ptr + USBD_AD_CDC_RX_RING_SZE - haudio->cdc_rx_rd_ptr) % USBD_AD_CDC_RX_RING_SZE);
+  n = (maxlen < avail) ? maxlen : avail;
+
+  for (i = 0U; i < n; i++)
+  {
+    buf[i] = haudio->cdc_rx_ring[haudio->cdc_rx_rd_ptr];
+    haudio->cdc_rx_rd_ptr = (uint16_t)((haudio->cdc_rx_rd_ptr + 1U) % USBD_AD_CDC_RX_RING_SZE);
+  }
+
+  return n;
+}
+
+uint32_t USBD_AD_CDC_Write(USBD_HandleTypeDef *pdev, const uint8_t *buf, uint32_t len)
+{
+  USBD_AUDIO_DUPLEX_HandleTypeDef *haudio = (USBD_AUDIO_DUPLEX_HandleTypeDef *)pdev->pClassDataCmsit[pdev->classId];
+  uint32_t queued, free_bytes, n, i;
+
+  if (haudio == NULL)
+  {
+    return 0U;
+  }
+
+  queued     = (uint32_t)((haudio->cdc_tx_wr_ptr + USBD_AD_CDC_TX_RING_SZE - haudio->cdc_tx_rd_ptr) % USBD_AD_CDC_TX_RING_SZE);
+  free_bytes = USBD_AD_CDC_TX_RING_SZE - queued;
+  n = (len < free_bytes) ? len : free_bytes;
+
+  for (i = 0U; i < n; i++)
+  {
+    haudio->cdc_tx_ring[haudio->cdc_tx_wr_ptr] = buf[i];
+    haudio->cdc_tx_wr_ptr = (uint16_t)((haudio->cdc_tx_wr_ptr + 1U) % USBD_AD_CDC_TX_RING_SZE);
+  }
+
+  return n;
+}
+
+void USBD_AD_CDC_Poll(USBD_HandleTypeDef *pdev)
+{
+  USBD_AUDIO_DUPLEX_HandleTypeDef *haudio = (USBD_AUDIO_DUPLEX_HandleTypeDef *)pdev->pClassDataCmsit[pdev->classId];
+  uint32_t queued, n, i;
+
+  if (haudio == NULL || haudio->cdc_tx_busy)
+  {
+    return;
+  }
+
+  queued = (uint32_t)((haudio->cdc_tx_wr_ptr + USBD_AD_CDC_TX_RING_SZE - haudio->cdc_tx_rd_ptr) % USBD_AD_CDC_TX_RING_SZE);
+  if (queued == 0U)
+  {
+    return;
+  }
+
+  n = (queued < USBD_AD_CDC_DATA_PACKET_SZE) ? queued : USBD_AD_CDC_DATA_PACKET_SZE;
+
+  for (i = 0U; i < n; i++)
+  {
+    haudio->cdc_tx_pkt[i] = haudio->cdc_tx_ring[haudio->cdc_tx_rd_ptr];
+    haudio->cdc_tx_rd_ptr = (uint16_t)((haudio->cdc_tx_rd_ptr + 1U) % USBD_AD_CDC_TX_RING_SZE);
+  }
+
+  haudio->cdc_tx_busy = 1U;
+  (void)USBD_LL_Transmit(pdev, USBD_AD_CDC_IN_EP, haudio->cdc_tx_pkt, (uint16_t)n);
 }

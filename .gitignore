@@ -13,3 +13,6 @@ firmware/GNURadio/**/__pycache__/
 
 # LibreOffice lock file for open documents
 .~lock.*#
+
+# Full upstream Hamlib checkout (CAT backend dev/test) - not ours to track
+Hamlib/

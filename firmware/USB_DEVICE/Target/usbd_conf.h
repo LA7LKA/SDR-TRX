@@ -16,7 +16,7 @@ extern "C" {
 #include <string.h>
 #include <stdlib.h>
 
-#define USBD_MAX_NUM_INTERFACES              3U
+#define USBD_MAX_NUM_INTERFACES              5U
 #define USBD_MAX_NUM_CONFIGURATION           1U
 /* Longest string we send is "QRP SDR TRX Audio" (18 chars -> 38-byte
    UTF-16 descriptor); 128 is already generous headroom, not the

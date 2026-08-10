@@ -1350,6 +1350,8 @@ static void usb_audio_mic_tx_update(uint16_t *side_slice, uint32_t n)
    PTT/CW pitch via radio_set_mode()/radio_tx_on()/cw_set_pitch(). */
 int audio_source_is_usb(void) { return audio_source == AUDIO_SRC_USB; }
 
+int mode_is_freedv(int mode);   /* defined further down; needed here too */
+
 /* Single place audio_source ever changes - the console `src` command used
    to set it directly too, bypassing this. Nothing drains the USB speaker
    (OUT) ring while it isn't the active TX source (during RX regardless of
@@ -1364,6 +1366,27 @@ static void audio_source_set(audio_src_t src)
 {
     if (src == audio_source)
         return;
+
+    /* FreeDV decode is main-loop CPU, mode-gated, not audio_source-gated -
+       it runs whenever MODE is a FreeDV mode, regardless of where the
+       result goes. On this MCU it already sits at ~125% of real-time
+       budget doing that decode alone (confirmed on hardware 2026-08-06,
+       700D: ~42-53ms per 40ms block) - tolerable in isolation (backlog
+       stays bounded, audio comes out understandable), but USB audio's own
+       ~1 kHz ISR servicing adds enough on top to push it past whatever
+       point the ring backlog and codec2's per-packet malloc/free churn
+       stop being recoverable: confirmed hard fault inside newlib's
+       allocator, then persistent codec2_calloc() failures once triggered.
+       Decided answer, not a workaround: FreeDV is analog-only (still
+       fully standalone, no PC needed there) and audio:usb is scoped to
+       ssb/cw/am/fm, which never showed this problem. See
+       radio_apply_mode() for the other half - switching *into* a FreeDV
+       mode while already on usb. */
+    if (src == AUDIO_SRC_USB && mode_is_freedv(MODE))
+    {
+        uart_puts("FreeDV is analog-only - switch mode first\r\n");
+        return;
+    }
 
     audio_source = src;
     USBD_AUDIO_DUPLEX_ResetSpeaker(&hUsbDeviceFS);
@@ -1583,6 +1606,20 @@ static uint32_t heap_largest_free(void)
  */
 static void radio_apply_mode(int mode)
 {
+    /* FreeDV is analog-only (see audio_source_set()'s guard for why) - this
+       is the other half, switching *into* a FreeDV mode while already on
+       audio:usb. Auto-switch rather than refuse: audio_source_set() alone
+       can reject a usb request made *while* already in a FreeDV mode, but
+       a mode change has nowhere sensible to "refuse" to - the mode change
+       itself is what the user asked for - so drop back to analog instead
+       of leaving them on a source that's about to go silent for this mode.
+       Runs before this function's own DMA stop/start below, as a
+       self-contained switch, rather than interleaving with it. */
+    if (mode_is_freedv(mode) && audio_source == AUDIO_SRC_USB)
+    {
+        audio_source_set(AUDIO_SRC_ANALOG);
+    }
+
     uint32_t want = block_size_for(mode);
 
     HAL_ADC_Stop_DMA(&hadc1);
@@ -2455,6 +2492,9 @@ volatile int am_testtone = 0;    /* AM: modulate an internal 1 kHz tone, not the
 static char cons_line[64];
 static int  cons_len;
 
+static char cat_line[64];
+static int  cat_len;
+
 static int str_eq(const char *a, const char *b)
 {
     while (*a && *b && *a == *b) { a++; b++; }
@@ -2655,6 +2695,57 @@ static void console_poll(void)
     }
 }
 
+/* CAT control transport over the CDC-ACM virtual serial port (see
+   usbd_audio_duplex.h/.c). Mirrors uart_puts()/console_exec()/
+   console_poll() above by design - same shape, different byte source.
+   cat_exec() just forwards to console_exec() for now: the real CAT/hamlib
+   command set is separate, in-progress work (see the header comment in
+   usbd_audio_duplex.h), this only proves the transport works. Note
+   console_exec()'s own reply text still goes out over uart_puts() (the
+   ST-Link VCP debug console), not back over CDC - only this function's
+   own local echo (typed characters, backspace, prompt) is visible on the
+   CDC port itself until the real CAT parser replaces this forwarding
+   call with one that replies via cat_puts(). */
+static void cat_exec(char *line)
+{
+    console_exec(line);
+}
+
+void cat_puts(const char *s)
+{
+    (void)USBD_AD_CDC_Write(&hUsbDeviceFS, (const uint8_t *)s, (uint32_t)strlen(s));
+}
+
+static void cat_poll(void)
+{
+    uint8_t c;
+
+    USBD_AD_CDC_Poll(&hUsbDeviceFS);
+
+    if (USBD_AD_CDC_Read(&hUsbDeviceFS, &c, 1U) == 0U)
+        return;
+
+    if (c == '\r' || c == '\n')
+    {
+        cat_puts("\r\n");
+        cat_line[cat_len] = 0;
+        cat_exec(cat_line);
+        cat_len = 0;
+        cat_puts("> ");
+    }
+    else if ((c == 8 || c == 127) && cat_len)
+    {
+        cat_len--;
+        cat_puts("\b \b");
+    }
+    else if (c >= ' ' && cat_len < (int)sizeof(cat_line) - 1)
+    {
+        cat_line[cat_len++] = (char)c;
+        char e[2] = { (char)c, 0 };
+        cat_puts(e);
+    }
+}
+
 void process_block(const uint16_t *in, uint16_t *out, int n)
 {
     uint32_t t0 = DWT->CYCCNT;
@@ -2824,6 +2915,7 @@ int main(void)
 
     uart_pump();
     console_poll();
+    cat_poll();
 
     // Front panel: encoder, buttons, PTT, OLED redraw - see hmi.c. Rate
     // limiting and the non-blocking I2C push live there now too.

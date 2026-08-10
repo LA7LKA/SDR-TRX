@@ -42,9 +42,9 @@ __ALIGN_BEGIN static uint8_t USBD_DeviceDesc[USB_LEN_DEV_DESC] __ALIGN_END =
   0x12,                       /* bLength */
   USB_DESC_TYPE_DEVICE,       /* bDescriptorType */
   0x00, 0x02,                 /* bcdUSB = 2.00 */
-  0x00,                       /* bDeviceClass: defined at interface level (UAC1) */
-  0x00,                       /* bDeviceSubClass */
-  0x00,                       /* bDeviceProtocol */
+  0xEF,                       /* bDeviceClass: Miscellaneous (IAD composite - Audio + CDC-ACM) */
+  0x02,                       /* bDeviceSubClass: Common Class */
+  0x01,                       /* bDeviceProtocol: Interface Association Descriptor */
   USB_MAX_EP0_SIZE,           /* bMaxPacketSize0 */
   LOBYTE(USBD_VID), HIBYTE(USBD_VID),
   LOBYTE(USBD_PID), HIBYTE(USBD_PID),
