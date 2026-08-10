@@ -320,3 +320,14 @@ void hmi_poll(void)
         redraw();
     }
 }
+
+uint32_t hmi_get_vfo_freq(void)
+{
+    return vfo_freq_hz;
+}
+
+void hmi_set_vfo_freq(uint32_t freq_hz)
+{
+    vfo_freq_hz = freq_hz;
+    redraw();   /* called from outside hmi_poll(), same as the PTT branch above */
+}

@@ -2695,20 +2695,115 @@ static void console_poll(void)
     }
 }
 
-/* CAT control transport over the CDC-ACM virtual serial port (see
-   usbd_audio_duplex.h/.c). Mirrors uart_puts()/console_exec()/
-   console_poll() above by design - same shape, different byte source.
-   cat_exec() just forwards to console_exec() for now: the real CAT/hamlib
-   command set is separate, in-progress work (see the header comment in
-   usbd_audio_duplex.h), this only proves the transport works. Note
-   console_exec()'s own reply text still goes out over uart_puts() (the
-   ST-Link VCP debug console), not back over CDC - only this function's
-   own local echo (typed characters, backspace, prompt) is visible on the
-   CDC port itself until the real CAT parser replaces this forwarding
-   call with one that replies via cat_puts(). */
+/* CAT control: a small subset of Kenwood-flavored ASCII commands, our own
+   design (not byte-exact to any real rig's spec - see usbd_audio_duplex.h's
+   header comment and the CAT plan for why). Framing: a line is terminated
+   by '\r'/'\n' same as the debug console, and each command's payload is
+   conventionally ';'-terminated too (trimmed below) purely for Kenwood
+   flavor - the '\n' is what actually triggers dispatch.
+
+   MD;/MDx;   - get/set mode (Kenwood digit table: 1=LSB 2=USB 3=CW 4=FM
+                5=AM; FreeDV modes report '2' on GET, have no SET mapping)
+   FA;/FB;    - get VFO frequency (11-digit Hz), FA<digits>;/FB<digits>; sets
+                it - cosmetic only, backed by hmi.c's UI-only vfo_freq_hz,
+                does not tune anything real (no LO hardware exists yet)
+   TX;/RX;    - PTT on/off, no reply either way (matches real Kenwood's
+                fire-and-forget convention)
+   IF;        - compact custom status: "IF" + 11-digit freq + mode digit +
+                PTT digit ('1'=TX/'0'=RX) + ";" - NOT real Kenwood's 38-byte
+                IF; layout, see the CAT plan for why that's unnecessary here
+   ID;        - fixed reply, lets a Hamlib open() sequence complete quickly
+
+   Replies go out via cat_puts(), never uart_puts() - the transport fix
+   this replaces the old console_exec()-forwarding stub with. */
+
+static const char mode_kw_get[MODE_COUNT] = {
+    [MODE_NBFM]         = '4',
+    [MODE_USB]          = '2',
+    [MODE_LSB]          = '1',
+    [MODE_FREEDV]       = '2',
+    [MODE_FREEDV_2400B] = '2',
+    [MODE_FREEDV_700D]  = '2',
+    [MODE_FREEDV_700E]  = '2',
+    [MODE_AM]           = '5',
+    [MODE_CW]           = '3',
+};
+
+static int kw_to_mode(char c)
+{
+    switch (c)
+    {
+        case '1': return MODE_LSB;
+        case '2': return MODE_USB;
+        case '3': return MODE_CW;
+        case '4': return MODE_NBFM;
+        case '5': return MODE_AM;
+        default:  return -1;
+    }
+}
+
+void cat_puts(const char *s);
+
 static void cat_exec(char *line)
 {
-    console_exec(line);
+    size_t len = strlen(line);
+    char reply[24];
+
+    if (len && line[len - 1] == ';')
+        line[--len] = 0;
+
+    if (len < 2)
+        return;
+
+    if (line[0] == 'M' && line[1] == 'D')
+    {
+        if (line[2] == 0)
+        {
+            snprintf(reply, sizeof(reply), "MD%c;\r\n", mode_kw_get[MODE]);
+            cat_puts(reply);
+        }
+        else
+        {
+            int m = kw_to_mode(line[2]);
+            if (m >= 0)
+            {
+                tx_active = 0;
+                radio_set_mode(m);
+            }
+        }
+    }
+    else if (line[0] == 'F' && (line[1] == 'A' || line[1] == 'B'))
+    {
+        if (line[2] == 0)
+        {
+            snprintf(reply, sizeof(reply), "%c%c%011lu;\r\n",
+                     line[0], line[1], (unsigned long)hmi_get_vfo_freq());
+            cat_puts(reply);
+        }
+        else
+        {
+            hmi_set_vfo_freq((uint32_t)strtoul(&line[2], NULL, 10));
+        }
+    }
+    else if (line[0] == 'T' && line[1] == 'X')
+    {
+        radio_tx_on();
+    }
+    else if (line[0] == 'R' && line[1] == 'X')
+    {
+        radio_tx_off();
+    }
+    else if (line[0] == 'I' && line[1] == 'F')
+    {
+        snprintf(reply, sizeof(reply), "IF%011lu%c%c;\r\n",
+                 (unsigned long)hmi_get_vfo_freq(), mode_kw_get[MODE],
+                 tx_active ? '1' : '0');
+        cat_puts(reply);
+    }
+    else if (line[0] == 'I' && line[1] == 'D')
+    {
+        cat_puts("ID019;\r\n");
+    }
 }
 
 void cat_puts(const char *s)
@@ -2725,24 +2820,26 @@ static void cat_poll(void)
     if (USBD_AD_CDC_Read(&hUsbDeviceFS, &c, 1U) == 0U)
         return;
 
+    /* No local echo, no prompt, unlike console_poll() - a CAT client (a
+       Hamlib backend, or rigctl) reads exactly the bytes cat_exec() sends
+       as a reply and nothing else; echoing typed characters back would
+       corrupt that framing (the echoed bytes have no way to be told apart
+       from a real reply). A human testing this over a raw terminal will
+       need local echo turned on in the terminal program itself instead -
+       the same experience as testing a real Kenwood rig's CAT port. */
     if (c == '\r' || c == '\n')
     {
-        cat_puts("\r\n");
         cat_line[cat_len] = 0;
         cat_exec(cat_line);
         cat_len = 0;
-        cat_puts("> ");
     }
     else if ((c == 8 || c == 127) && cat_len)
     {
         cat_len--;
-        cat_puts("\b \b");
     }
     else if (c >= ' ' && cat_len < (int)sizeof(cat_line) - 1)
     {
         cat_line[cat_len++] = (char)c;
-        char e[2] = { (char)c, 0 };
-        cat_puts(e);
     }
 }
 

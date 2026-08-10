@@ -15,4 +15,11 @@ void hmi_init(I2C_HandleTypeDef *oled_i2c);
 /* Call every main-loop iteration. */
 void hmi_poll(void);
 
+/* CAT-control accessors for the UI-only vfo_freq_hz placeholder (see hmi.c
+   for why it's cosmetic - no real VFO/LO exists yet). hmi_set_vfo_freq()
+   redraws immediately since it's called from outside hmi_poll()'s own
+   throttled redraw path. */
+uint32_t hmi_get_vfo_freq(void);
+void hmi_set_vfo_freq(uint32_t freq_hz);
+
 #endif

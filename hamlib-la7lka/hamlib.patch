@@ -1,0 +1,70 @@
+diff --git a/configure.ac b/configure.ac
+index 7765f36a6..4693dbfb4 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -66,7 +66,7 @@ dnl added to AC_CONFIG_FILES near the end of this file.  See README.developer
+ dnl Beware of duplication should a backend directory include both rig and
+ dnl rotor definitions, e.g. "dummy".  Optional backends will not be listed
+ dnl here but will be added later, e.g. "winradio".
+-RIG_BACKEND_LIST="rigs/adat rigs/alinco rigs/aor rigs/barrett rigs/codan rigs/dorji rigs/drake rigs/dummy rigs/elad rigs/flexradio rigs/icom rigs/icmarine rigs/jrc rigs/kachina rigs/kenwood rigs/kit rigs/lowe rigs/pcr rigs/prm80 rigs/racal rigs/rft rigs/rs rigs/simplecat rigs/skanti rigs/tapr rigs/tentec rigs/tuner rigs/uniden rigs/wj rigs/yaesu rigs/gomspace rigs/mds rigs/anytone rigs/motorola rigs/commradio rigs/guohetec rigs/harris rigs/ats-mini"
++RIG_BACKEND_LIST="rigs/adat rigs/alinco rigs/aor rigs/barrett rigs/codan rigs/dorji rigs/drake rigs/dummy rigs/elad rigs/flexradio rigs/icom rigs/icmarine rigs/jrc rigs/kachina rigs/kenwood rigs/kit rigs/lowe rigs/pcr rigs/prm80 rigs/racal rigs/rft rigs/rs rigs/simplecat rigs/skanti rigs/tapr rigs/tentec rigs/tuner rigs/uniden rigs/wj rigs/yaesu rigs/gomspace rigs/mds rigs/anytone rigs/motorola rigs/commradio rigs/guohetec rigs/harris rigs/ats-mini rigs/la7lka"
+ RIG_BACKEND_OPTIONAL_LIST=""
+ ROT_BACKEND_LIST="rotators/amsat rotators/apex rotators/ars rotators/celestron rotators/cnctrk rotators/grbltrk rotators/easycomm rotators/ether6 rotators/flir rotators/fodtrack rotators/gs232a rotators/heathkit rotators/m2 rotators/meade rotators/rotorez rotators/sartek rotators/saebrtrack rotators/spid rotators/ts7400 rotators/prosistel rotators/ioptron rotators/satel rotators/skywatcher rotators/radant"
+ ROT_BACKEND_OPTIONAL_LIST="rotators/androidsensor"
+@@ -958,6 +958,7 @@ rigs/jrc/Makefile
+ rigs/kachina/Makefile
+ rigs/kenwood/Makefile
+ rigs/kit/Makefile
++rigs/la7lka/Makefile
+ rigs/lowe/Makefile
+ rigs/mds/Makefile
+ rigs/motorola/Makefile
+diff --git a/include/hamlib/riglist.h b/include/hamlib/riglist.h
+index 5618d340c..7ca6f147f 100644
+--- a/include/hamlib/riglist.h
++++ b/include/hamlib/riglist.h
+@@ -1174,6 +1174,24 @@
+ #define RIG_MODEL_ATS_MINI RIG_MAKE_MODEL(RIG_ATS_MINI, 1)
+ ///@}
+ 
++/*
++ * LA7LKA
++ */
++/** The `LA7LKA` family - homebrew rigs speaking this project's own small
++ *  ASCII CAT subset, not a real commercial rig's protocol. */
++#define RIG_LA7LKA 45
++/** Used in register.c for the `be_name`. */
++#define RIG_BACKEND_LA7LKA "la7lka"
++
++/**
++ * \name LA7LKA
++ * LA7LKA models.
++ */
++///@{
++/// Model of the `RIG_LA7LKA` backend family.
++#define RIG_MODEL_LA7LKA_TRX RIG_MAKE_MODEL(RIG_LA7LKA, 1)
++///@}
++
+ /** Convenience type definition for rig model. */
+ typedef uint32_t rig_model_t;
+ 
+diff --git a/src/register.c b/src/register.c
+index a8801dc8a..a555c211c 100644
+--- a/src/register.c
++++ b/src/register.c
+@@ -94,6 +94,7 @@ DEFINE_INITRIG_BACKEND(commradio);
+ DEFINE_INITRIG_BACKEND(simplecat);
+ DEFINE_INITRIG_BACKEND(harris);
+ DEFINE_INITRIG_BACKEND(atsmini);
++DEFINE_INITRIG_BACKEND(la7lka);
+ 
+ //! @endcond
+ 
+@@ -161,6 +162,7 @@ static struct
+     { RIG_SIMPLECAT, RIG_BACKEND_SIMPLECAT, RIG_FUNCNAMA(simplecat) },
+     { RIG_HARRIS, RIG_BACKEND_HARRIS, RIG_FUNCNAMA(harris) },
+     { RIG_ATS_MINI, RIG_BACKEND_ATS_MINI, RIG_FUNCNAMA(atsmini) },
++    { RIG_LA7LKA, RIG_BACKEND_LA7LKA, RIG_FUNCNAMA(la7lka) },
+     { 0, NULL }, /* end */
+ };
+ 

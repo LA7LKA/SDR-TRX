@@ -16,3 +16,7 @@ firmware/GNURadio/**/__pycache__/
 
 # Full upstream Hamlib checkout (CAT backend dev/test) - not ours to track
 Hamlib/
+
+# Local install of grig (GUI CAT test client), built from source against
+# the Hamlib checkout above - not ours to track either
+grig-local/
