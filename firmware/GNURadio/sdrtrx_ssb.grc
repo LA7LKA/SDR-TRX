@@ -110,24 +110,24 @@ blocks:
     affinity: ''
     alias: ''
     comment: ''
-    device_name: plughw:CARD=J380,DEV=0
+    device_name: pulse:gnuradio_virtual
     num_inputs: '1'
-    ok_to_block: 'False'
+    ok_to_block: 'True'
     samp_rate: samp_rate
   states:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [1200, 160.0]
+    coordinate: [1200, 80.0]
     rotation: 0
-    state: enabled
+    state: disabled
 - name: audio_sink_0_0
   id: audio_sink
   parameters:
     affinity: ''
     alias: ''
     comment: ''
-    device_name: plughw:CARD=Generic,DEV=0
+    device_name: plughw:CARD=Generic_1,DEV=0
     num_inputs: '1'
     ok_to_block: 'True'
     samp_rate: samp_rate
@@ -172,13 +172,30 @@ blocks:
     coordinate: [1240, 352.0]
     rotation: 0
     state: enabled
+- name: audio_sink_0_1
+  id: audio_sink
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    device_name: plughw:CARD=J380,DEV=0
+    num_inputs: '1'
+    ok_to_block: 'True'
+    samp_rate: samp_rate
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [1200, 192.0]
+    rotation: 0
+    state: enabled
 - name: audio_source_0
   id: audio_source
   parameters:
     affinity: ''
     alias: ''
     comment: ''
-    device_name: plughw:CARD=Generic,DEV=0
+    device_name: plughw:CARD=Generic_1,DEV=0
     maxoutbuf: '0'
     minoutbuf: '0'
     num_outputs: '1'
@@ -220,7 +237,7 @@ blocks:
     maxoutbuf: '0'
     minoutbuf: '0'
     num_outputs: '1'
-    ok_to_block: 'False'
+    ok_to_block: 'True'
     samp_rate: samp_rate
   states:
     bus_sink: false
@@ -239,7 +256,7 @@ blocks:
     maxoutbuf: '0'
     minoutbuf: '0'
     num_outputs: '1'
-    ok_to_block: 'False'
+    ok_to_block: 'True'
     samp_rate: samp_rate
   states:
     bus_sink: false
@@ -281,7 +298,7 @@ blocks:
     beta: '6.76'
     comment: 'complex band pass: positive keeps USB, negative keeps LSB'
     decim: '1'
-    gain: '5'
+    gain: '1'
     high_cutoff_freq: max(300*sb, 2700*sb)
     interp: '1'
     low_cutoff_freq: min(300*sb, 2700*sb)
@@ -599,6 +616,7 @@ connections:
 - [blocks_complex_to_real_0_0, '0', audio_sink_0_0, '0']
 - [blocks_file_source_0, '0', band_pass_filter_0_0, '0']
 - [blocks_multiply_const_vxx_0, '0', audio_sink_0, '0']
+- [blocks_multiply_const_vxx_0, '0', audio_sink_0_1, '0']
 - [blocks_multiply_xx_0, '0', band_pass_filter_0, '0']
 - [blocks_multiply_xx_0, '0', qtgui_freq_sink_x_0, '0']
 - [blocks_multiply_xx_0_0, '0', blocks_complex_to_real_0_0, '0']

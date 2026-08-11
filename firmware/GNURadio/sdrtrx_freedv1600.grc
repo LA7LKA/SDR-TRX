@@ -177,7 +177,7 @@ blocks:
     bus_structure: null
     coordinate: [168, 328.0]
     rotation: 0
-    state: enabled
+    state: disabled
 - name: audio_source_0_0
   id: audio_source
   parameters:
@@ -207,7 +207,7 @@ blocks:
     maxoutbuf: '0'
     minoutbuf: '0'
     num_outputs: '1'
-    ok_to_block: 'False'
+    ok_to_block: 'True'
     samp_rate: samp_rate
   states:
     bus_sink: false
@@ -313,7 +313,7 @@ blocks:
     bus_structure: null
     coordinate: [168, 160.0]
     rotation: 0
-    state: disabled
+    state: enabled
 - name: blocks_float_to_short_0
   id: blocks_float_to_short
   parameters:

@@ -138,7 +138,7 @@ blocks:
     comment: ''
     device_name: plughw:CARD=Generic,DEV=0
     num_inputs: '1'
-    ok_to_block: 'False'
+    ok_to_block: 'True'
     samp_rate: samp_rate
   states:
     bus_sink: false
@@ -155,7 +155,7 @@ blocks:
     comment: ''
     device_name: plughw:CARD=J380,DEV=0
     num_inputs: '1'
-    ok_to_block: 'False'
+    ok_to_block: 'True'
     samp_rate: samp_rate
   states:
     bus_sink: false
@@ -180,7 +180,7 @@ blocks:
     bus_structure: null
     coordinate: [1216, 104.0]
     rotation: 0
-    state: disabled
+    state: enabled
 - name: audio_sink_0_0_1
   id: audio_sink
   parameters:
@@ -197,7 +197,7 @@ blocks:
     bus_structure: null
     coordinate: [1216, 16.0]
     rotation: 0
-    state: disabled
+    state: enabled
 - name: audio_source_0
   id: audio_source
   parameters:
@@ -216,7 +216,7 @@ blocks:
     bus_structure: null
     coordinate: [40, 336.0]
     rotation: 0
-    state: enabled
+    state: disabled
 - name: audio_source_0_0
   id: audio_source
   parameters:
@@ -246,7 +246,7 @@ blocks:
     maxoutbuf: '0'
     minoutbuf: '0'
     num_outputs: '1'
-    ok_to_block: 'False'
+    ok_to_block: 'True'
     samp_rate: samp_rate
   states:
     bus_sink: false
@@ -254,7 +254,7 @@ blocks:
     bus_structure: null
     coordinate: [976, 16.0]
     rotation: 0
-    state: disabled
+    state: enabled
 - name: audio_source_0_1_0
   id: audio_source
   parameters:
@@ -265,7 +265,7 @@ blocks:
     maxoutbuf: '0'
     minoutbuf: '0'
     num_outputs: '1'
-    ok_to_block: 'False'
+    ok_to_block: 'True'
     samp_rate: samp_rate
   states:
     bus_sink: false
@@ -273,7 +273,7 @@ blocks:
     bus_structure: null
     coordinate: [976, 104.0]
     rotation: 0
-    state: disabled
+    state: enabled
 - name: blocks_complex_to_real_0
   id: blocks_complex_to_real
   parameters:
@@ -311,7 +311,7 @@ blocks:
     bus_structure: null
     coordinate: [64, 168.0]
     rotation: 0
-    state: disabled
+    state: enabled
 - name: blocks_float_to_short_0
   id: blocks_float_to_short
   parameters:
