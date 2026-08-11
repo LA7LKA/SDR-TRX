@@ -25,6 +25,9 @@ void radio_tx_off(void);
 void cw_set_pitch(float hz);
 int  audio_source_is_usb(void);
 void audio_source_toggle(void);
+int  cw_keyer_type_get(void);
+void cw_keyer_type_set(int t);
+const char *cw_keyer_type_name(void);
 
 /* Button numbers, in D2..D10+D12 wiring order - see buttons.h. */
 enum {
@@ -46,7 +49,7 @@ enum {
 #define PTT_PORT GPIOC
 #define PTT_PIN  GPIO_PIN_13
 
-typedef enum { FOCUS_FREQ, FOCUS_VOLUME, FOCUS_MIC, FOCUS_CWPITCH, FOCUS_POWER, FOCUS_RIT } focus_t;
+typedef enum { FOCUS_FREQ, FOCUS_VOLUME, FOCUS_MIC, FOCUS_CWPITCH, FOCUS_KEYTYPE, FOCUS_POWER, FOCUS_RIT } focus_t;
 
 static const uint32_t step_table[] = { 10, 100, 1000, 10000 };
 #define STEP_COUNT ((int)(sizeof(step_table) / sizeof(step_table[0])))
@@ -105,6 +108,7 @@ static void redraw(void)
     case FOCUS_VOLUME:  snprintf(l2, sizeof(l2), "VOL:%d", volume); break;
     case FOCUS_MIC:     snprintf(l2, sizeof(l2), "MIC:%d", (int)mic_gain); break;
     case FOCUS_CWPITCH: snprintf(l2, sizeof(l2), "PITCH:%dHZ", (int)cw_pitch_hz); break;
+    case FOCUS_KEYTYPE: snprintf(l2, sizeof(l2), "KEY:%s", cw_keyer_type_name()); break;
     case FOCUS_POWER:   snprintf(l2, sizeof(l2), "PWR:%d", tx_power_pct); break;
     case FOCUS_RIT:     snprintf(l2, sizeof(l2), "RIT:%ldHZ", (long)rit_offset_hz); break;
     default:            l2[0] = 0; break;
@@ -300,6 +304,19 @@ void hmi_poll(void)
                moves the TX carrier the same amount) immediately. */
             cw_set_pitch(cw_pitch_hz + (float)(enc_delta * 10));
             break;
+        case FOCUS_KEYTYPE:
+        {
+            /* A 3-item discrete menu, not an analog value - one step per
+               poll interval regardless of how far the encoder actually
+               turned, same reasoning FOCUS_MODE-style button cycling
+               already uses (a fast turn shouldn't skip through choices
+               unpredictably). */
+            int kt = cw_keyer_type_get() + ((enc_delta > 0) ? 1 : -1);
+            if (kt < 0) kt = 2;
+            if (kt > 2) kt = 0;
+            cw_keyer_type_set(kt);
+            break;
+        }
         case FOCUS_POWER:
             tx_power_pct += enc_delta * 5;
             if (tx_power_pct < 0)   tx_power_pct = 0;

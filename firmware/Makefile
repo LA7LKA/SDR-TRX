@@ -74,6 +74,7 @@ Core/Src/oled.c \
 Core/Src/encoder.c \
 Core/Src/buttons.c \
 Core/Src/hmi.c \
+Core/Src/cw_paddle.c \
 USB_DEVICE/App/usb_device.c \
 USB_DEVICE/App/usbd_desc.c \
 USB_DEVICE/App/usbd_audio_if.c \

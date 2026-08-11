@@ -31,6 +31,7 @@
 #include "encoder.h"
 #include "buttons.h"
 #include "hmi.h"
+#include "cw_paddle.h"
 #include "usb_device.h"
 #include "usbd_audio_duplex.h"
 #include <math.h>
@@ -2122,6 +2123,154 @@ static float    cw_step_re, cw_step_im;
 static float    cw_side_re = 1.0f, cw_side_im = 0.0f;
 static float    cw_side_step_re, cw_side_step_im;
 
+/*
+ * Live key/paddle input - an alternative to the beacon message above, not
+ * a replacement: the console "tx"/CAT "TX;" commands still send CW_MSG as
+ * before (useful for RF bench testing with no key connected), while
+ * physically pressing a key/paddle starts and ends its own TX session and
+ * keys live. cw_tx_process_block() below picks whichever source is active
+ * per TX session (cw_tx_source_live) - both feed the exact same envelope/
+ * oscillator code, since that part was already a live-updatable "want"
+ * gate under the hood, just fed from cw_key[] until now.
+ *
+ * Menu-selectable key type (see hmi.c's FOCUS_KEYTYPE), matching the
+ * convention on rigs like Oystein's FT-857D: Straight key needs no state
+ * machine at all (want == key down, timing is entirely the operator's
+ * hand). Iambic A/B run a classic squeeze keyer: while sending an
+ * element, the opposite paddle being pressed latches "memory" so it
+ * alternates automatically; the two modes differ only in what happens
+ * right as both paddles release - mode A stops as soon as they're up,
+ * mode B still sends one queued memory element first. This is the one
+ * well-known, well-documented distinguishing behavior between the two
+ * modes; the exact edge-case feel (as with any keyer) really wants a
+ * real paddle to confirm against - untested on real hardware since none
+ * exists yet, only bench-testable with two spare GPIOs/pushbuttons.
+ */
+typedef enum { CW_KEYER_STRAIGHT = 0, CW_KEYER_IAMBIC_A, CW_KEYER_IAMBIC_B } cw_keyer_type_t;
+static cw_keyer_type_t cw_keyer_type = CW_KEYER_STRAIGHT;
+
+int cw_keyer_type_get(void) { return (int)cw_keyer_type; }
+
+void cw_keyer_type_set(int t)
+{
+    if (t >= CW_KEYER_STRAIGHT && t <= CW_KEYER_IAMBIC_B)
+        cw_keyer_type = (cw_keyer_type_t)t;
+}
+
+const char *cw_keyer_type_name(void)
+{
+    static const char *names[] = { "STRAIGHT", "IAMBIC-A", "IAMBIC-B" };
+    return names[cw_keyer_type];
+}
+
+/* 1 when the current TX session was started by the physical key/paddle
+   (cw_keyer_poll(), below) rather than by the console/CAT beacon TX
+   command - tells cw_tx_process_block() which source feeds "want". */
+static int cw_tx_source_live;
+
+typedef enum { CW_KEYER_IDLE, CW_KEYER_SEND_DIT, CW_KEYER_SEND_DAH, CW_KEYER_SPACE } cw_keyer_state_t;
+static cw_keyer_state_t cw_keyer_state;
+static uint32_t cw_keyer_timer;
+static uint8_t  cw_keyer_dit_mem;
+static uint8_t  cw_keyer_dah_mem;
+static uint8_t  cw_keyer_last_was_dit;
+
+/* Sample-rate (called once per audio sample from cw_tx_process_block(),
+   same cadence as the cw_key[] array lookup it replaces) - returns the
+   live "want" gate: 1 = key down / element being sent, 0 = up/space. */
+static int cw_keyer_tick(void)
+{
+    uint8_t dit = cw_paddle_dit_read();
+    uint8_t dah = (cw_keyer_type != CW_KEYER_STRAIGHT) ? cw_paddle_dah_read() : 0U;
+
+    if (cw_keyer_type == CW_KEYER_STRAIGHT)
+        return dit;
+
+    switch (cw_keyer_state)
+    {
+    case CW_KEYER_IDLE:
+        cw_keyer_dit_mem = 0;
+        cw_keyer_dah_mem = 0;
+        if (dit)
+        {
+            cw_keyer_state = CW_KEYER_SEND_DIT;
+            cw_keyer_timer = cw_dit_samples;
+            cw_keyer_last_was_dit = 1;
+        }
+        else if (dah)
+        {
+            cw_keyer_state = CW_KEYER_SEND_DAH;
+            cw_keyer_timer = cw_dit_samples * 3U;
+            cw_keyer_last_was_dit = 0;
+        }
+        return 0;
+
+    case CW_KEYER_SEND_DIT:
+    case CW_KEYER_SEND_DAH:
+        if (dit) cw_keyer_dit_mem = 1;
+        if (dah) cw_keyer_dah_mem = 1;
+        if (--cw_keyer_timer == 0U)
+        {
+            cw_keyer_state = CW_KEYER_SPACE;
+            cw_keyer_timer = cw_dit_samples;   /* one dit of inter-element space */
+        }
+        return 1;
+
+    case CW_KEYER_SPACE:
+    default:
+        if (dit) cw_keyer_dit_mem = 1;
+        if (dah) cw_keyer_dah_mem = 1;
+        if (--cw_keyer_timer != 0U)
+            return 0;
+
+        if (!dit && !dah && cw_keyer_type == CW_KEYER_IAMBIC_A)
+        {
+            /* Mode A: no bonus element once both paddles are actually up. */
+            cw_keyer_state = CW_KEYER_IDLE;
+            return 0;
+        }
+
+        /* Alternate first (squeeze, or - mode B only - one bonus element
+           right after release via memory); otherwise repeat whichever
+           paddle is still physically held; otherwise stop. */
+        if (!cw_keyer_last_was_dit && (dit || cw_keyer_dit_mem))
+        {
+            cw_keyer_state = CW_KEYER_SEND_DIT;
+            cw_keyer_timer = cw_dit_samples;
+            cw_keyer_last_was_dit = 1;
+        }
+        else if (cw_keyer_last_was_dit && (dah || cw_keyer_dah_mem))
+        {
+            cw_keyer_state = CW_KEYER_SEND_DAH;
+            cw_keyer_timer = cw_dit_samples * 3U;
+            cw_keyer_last_was_dit = 0;
+        }
+        else if (dit)
+        {
+            cw_keyer_state = CW_KEYER_SEND_DIT;
+            cw_keyer_timer = cw_dit_samples;
+            cw_keyer_last_was_dit = 1;
+        }
+        else if (dah)
+        {
+            cw_keyer_state = CW_KEYER_SEND_DAH;
+            cw_keyer_timer = cw_dit_samples * 3U;
+            cw_keyer_last_was_dit = 0;
+        }
+        else
+        {
+            cw_keyer_state = CW_KEYER_IDLE;
+        }
+
+        if (cw_keyer_state != CW_KEYER_IDLE)
+        {
+            cw_keyer_dit_mem = 0;
+            cw_keyer_dah_mem = 0;
+        }
+        return 0;
+    }
+}
+
 static void cw_build_message(void)
 {
     int n = 0;
@@ -2189,7 +2338,12 @@ void cw_tx_process_block(uint16_t *out, uint16_t *side_out, int n)
 {
     for (int i = 0; i < n; i++)
     {
-        int want = cw_key[cw_unit];
+        /* Live key/paddle session: want comes from the real-time keyer,
+           sampled fresh every sample - the beacon array below still
+           advances underneath it (harmless; cw_tx_restart() always resets
+           it at the start of the next session regardless of source) but
+           isn't what's actually keying the carrier. */
+        int want = cw_tx_source_live ? cw_keyer_tick() : cw_key[cw_unit];
 
         if (++cw_tick >= cw_dit_samples)
         {
@@ -2233,6 +2387,56 @@ void cw_tx_process_block(uint16_t *out, uint16_t *side_out, int n)
         if (ys > 4095.0f) ys = 4095.0f;
 
         side_out[i] = (uint16_t)ys;
+    }
+}
+
+/* Forward declarations: radio_tx_on()/radio_tx_off() (defined further down
+   with the rest of the console/CAT-shared TX control functions) - needed
+   here so cw_keyer_poll() can start/stop its own TX session the same way
+   PTT and the console/CAT "tx"/"rx" commands already do. */
+int  radio_tx_on(void);
+void radio_tx_off(void);
+
+/*
+ * Main-loop-rate (not sample-rate) polling for the physical key/paddle -
+ * decides when a live-keyed TX session should start and end, the same
+ * coarse "session" role PTT plays for voice modes. Deliberately NOT
+ * sample-rate: radio_tx_on()/radio_tx_off() reset DMA/USB audio rings and
+ * are far too expensive to call more than once per over. The actual
+ * element-by-element keying happens separately, at sample rate, in
+ * cw_keyer_tick() inside cw_tx_process_block() above.
+ */
+#define CW_KEYER_HANG_MS 300U   /* how long the key/paddle can sit idle
+                                    mid-session before TX drops - long
+                                    enough to cover normal inter-word
+                                    pauses at low WPM, short enough that
+                                    letting go for good ends the over
+                                    reasonably promptly */
+
+void cw_keyer_poll(void)
+{
+    static uint32_t last_active_tick;
+
+    if (MODE != MODE_CW)
+        return;
+
+    uint8_t active = cw_paddle_dit_read()
+                    || (cw_keyer_type != CW_KEYER_STRAIGHT && cw_paddle_dah_read());
+    uint32_t now = HAL_GetTick();
+
+    if (active)
+    {
+        last_active_tick = now;
+        if (!tx_active)
+        {
+            cw_tx_source_live = 1;
+            radio_tx_on();
+        }
+    }
+    else if (tx_active && cw_tx_source_live && (now - last_active_tick) >= CW_KEYER_HANG_MS)
+    {
+        radio_tx_off();
+        cw_tx_source_live = 0;
     }
 }
 
@@ -3072,6 +3276,7 @@ int main(void)
   // skeleton with no hardware behind it yet (freq, band, RIT, CW pitch,
   // volume).
   hmi_init(&hi2c1);
+  cw_paddle_gpio_init();
 
   /* USER CODE END 2 */
 
@@ -3087,6 +3292,11 @@ int main(void)
     // Front panel: encoder, buttons, PTT, OLED redraw - see hmi.c. Rate
     // limiting and the non-blocking I2C push live there now too.
     hmi_poll();
+
+    // Live CW key/paddle: session start/stop only (PTT-equivalent) - the
+    // actual element timing happens at sample rate inside
+    // cw_tx_process_block(), not here.
+    cw_keyer_poll();
 
     if (tx_active)
     {
