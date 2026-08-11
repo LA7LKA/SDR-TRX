@@ -11,11 +11,11 @@
  * one jack serves both a straight key and an iambic paddle, selected by
  * the operator via a menu setting rather than by which jack is used.
  *
- * PLACEHOLDER PIN ASSIGNMENT - no key/paddle hardware exists yet
- * (Oystein hasn't bought/built one). PG9/PG12 were picked because
- * nothing else in the firmware currently claims them, not because
- * they're confirmed free on the physical Nucleo-F746ZG headers - swap
- * cw_paddle.c's #defines once real wiring is decided.
+ * PIN ASSIGNMENT: PB10 (dit/straight-key)/PB11 (dah) - no key/paddle
+ * hardware exists yet (Oystein hasn't bought/built one), but these two
+ * were deliberately picked (2026-08-11) over other free-looking pins to
+ * leave PG9/PG12 open for a planned UART-to-Bluetooth-module link. Swap
+ * cw_paddle.c's #defines if the wiring plan changes again.
  */
 
 void    cw_paddle_gpio_init(void);

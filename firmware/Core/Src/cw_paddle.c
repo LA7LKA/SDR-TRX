@@ -1,15 +1,16 @@
 #include "cw_paddle.h"
 #include "stm32f7xx_hal.h"
 
-/* See cw_paddle.h - placeholder pins, confirm against real wiring. */
-#define CW_PADDLE_DIT_PORT   GPIOG
-#define CW_PADDLE_DIT_PIN    GPIO_PIN_9
-#define CW_PADDLE_DAH_PORT   GPIOG
-#define CW_PADDLE_DAH_PIN    GPIO_PIN_12
+/* See cw_paddle.h - PB10/PB11 chosen 2026-08-11 specifically to leave
+   PG9/PG12 free for a planned UART-to-Bluetooth-module link. */
+#define CW_PADDLE_DIT_PORT   GPIOB
+#define CW_PADDLE_DIT_PIN    GPIO_PIN_10
+#define CW_PADDLE_DAH_PORT   GPIOB
+#define CW_PADDLE_DAH_PIN    GPIO_PIN_11
 
 void cw_paddle_gpio_init(void)
 {
-    __HAL_RCC_GPIOG_CLK_ENABLE();
+    __HAL_RCC_GPIOB_CLK_ENABLE();
 
     GPIO_InitTypeDef gpio = {0};
     gpio.Pin  = CW_PADDLE_DIT_PIN | CW_PADDLE_DAH_PIN;
