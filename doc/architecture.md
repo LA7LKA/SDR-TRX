@@ -4,14 +4,14 @@
 
 The whole Mk2 radio in one block diagram, both directions. The DSP core sits in
 the middle; everything analog hangs off its two IF ports — ADC1 in, DAC2 out —
-and the shared 45 MHz → 12 kHz chain is bidirectional, so the same first mixer
-and 45 MHz crystal filter serve receive and transmit, selected by the T/R switch.
+and the shared 21.4 MHz → 12 kHz chain is bidirectional, so the same first mixer
+and 21.4 MHz crystal filter serve receive and transmit, selected by the T/R switch.
 
 ![Block diagram: antenna through the band-pass/LPF banks, LNA, double conversion via LO1/LO2 to a 12 kHz second IF, the STM32F746ZG DSP core, and the audio and PA/driver paths](diagrams/block-diagram.jpg)
 
 For receive, follow the chain up: antenna → RX band-pass bank → LNA → 1st
-mixer (driven by LO1) → 45 MHz crystal filter → 2nd mixer (driven by LO2,
-fixed ~44.988 MHz) → VCA → low-pass amp → ADC → the STM32F746ZG → DAC → output
+mixer (driven by LO1) → 21.4 MHz crystal filter → 2nd mixer (driven by LO2,
+fixed 21.388 MHz) → VCA → low-pass amp → ADC → the STM32F746ZG → DAC → output
 low-pass amp → speaker/phones. Transmit runs the same chain in the other
 direction: conditioned mic input → ADC → the STM32F746ZG → DAC → VCA → the
 same two mixers and crystal filter → driver and push-pull PA → TX low-pass
@@ -71,28 +71,34 @@ range centred on 1.65 V. No PCB, no alignment, no mixers.
 
 ## Mk2 — up-converting front end
 
-Double conversion: up to a 45 MHz first IF, then straight down to the 12 kHz IF
+Double conversion: up to a 21.4 MHz first IF, then straight down to the 12 kHz IF
 the firmware ingests.
 
 ```
-RF --> 30 MHz LP --> band-pass bank --> ADE-1 mixer --> 45 MHz xtal (±7 kHz) --> 2nd mixer --> 12 kHz --> active LP --> ADC (48 kHz)
+RF --> 30 MHz LP --> band-pass bank --> ADE-1 mixer --> 21.4 MHz xtal (15 kHz) --> 2nd mixer --> 12 kHz --> active LP --> ADC (48 kHz)
 ```
 
-Up-converting to 45 MHz first is what makes image rejection easy: a single
+Up-converting to 21.4 MHz first is what makes image rejection easy: a single
 conversion to a low IF would put the image only twice the IF away — 910 kHz on
 20 m — needing a tracking preselector with an impossible Q, which is exactly why
 general-coverage receivers went to up-conversion.
 
-The first mixer runs **sum mixing** with the LO on the low side, `LO1 = IF − RF`,
-rather than the more usual `LO1 = RF + IF`. That is the key to using a cheap DDS:
-LO1 then tunes only **16.5–43.1 MHz** across 160–10 m, comfortably inside an
-AD9851's clean range and well under its ~70 MHz ceiling, so it covers all of HF
-including 10 m. The wanted sum lands at 45 MHz; the image sits at `2 × IF − RF` =
-**60–88 MHz**, up in VHF where the 30 MHz input low-pass and the band-pass bank
-annihilate it. Two quirks come with sum mixing, both minor: tuning inverts (dial
-up means DDS down, a one-line flip in `set frequency`), and the half-IF point at
-`RF = 22.5 MHz` has LO1 = RF — not an amateur band, and handled by mixer balance
-and the band-pass bank.
+The first mixer runs standard **high-side injection**, `LO1 = RF + IF`. LO1 tunes
+**21.9–51.4 MHz** across 160–10 m, comfortably inside an AD9851's clean output
+range and well under its ~70 MHz ceiling, so it covers all of HF including 10 m.
+The wanted difference product lands at 21.4 MHz; the image sits at `RF + 2 × IF` =
+**43.3–72.8 MHz**, clear of FM broadcast (87–108 MHz) — the 30 MHz input low-pass
+and the band-pass bank remove it well before the mixer.
+
+**Why 21.4 MHz and not 45 MHz** (the original first-IF choice): 45 MHz's image,
+by the same `RF + 2 × IF` formula, lands at 90.5–120 MHz — squarely on top of FM
+broadcast, where any front-end imperfection lets strong local FM stations image
+straight into HF reception. A 70 MHz IF would clear FM broadcast too, but needs
+LO1 up near 100 MHz, past the AD9851's clean ceiling — it would run dirty across
+most of the band, undermining the point of moving the IF at all. 21.4 MHz threads
+both needles, and it's also one of the most common classic IF frequencies in
+ham/commercial gear, so crystal filters are cheap and plentiful — unlike 45 MHz
+or especially 70 MHz.
 
 ### Band-pass filter bank
 
@@ -101,7 +107,7 @@ a preselector the first mixer sees the entire HF spectrum at once, including
 broadcast stations tens of dB stronger than any amateur signal. Switched
 per-band filters restore selectivity ahead of the mixer, and that is what
 separates a good up-converting receiver from a mediocre one. It also helps the
-30 MHz input low-pass dispose of the 60–88 MHz image band, since a filter centred
+30 MHz input low-pass dispose of the 43.3–72.8 MHz image band, since a filter centred
 on an amateur band has enormous attenuation up there.
 
 Six filters cover all ten HF bands, every one with a bandwidth ratio well under
@@ -126,17 +132,19 @@ Only **two LOs** are needed, and only the first one tunes:
 
 | LO | Frequency | Role |
 | --- | --- | --- |
-| LO1 | 16.5–43.1 MHz, variable (AD9851 DDS) | RF to 45 MHz, sum mixing |
-| LO2 | 44.988 MHz, fixed | 45 MHz to 12 kHz |
+| LO1 | 21.9–51.4 MHz, variable (AD9851 DDS) | RF to 21.4 MHz, high-side injection |
+| LO2 | 21.388 MHz, fixed (trimmed crystal) | 21.4 MHz to 12 kHz |
 
-Going from 45 MHz to a 12 kHz second IF in one step — with no 455 kHz stage in
-between — works because the **45 MHz crystal filter does double duty**. A
-ready-made ±7 kHz (14 kHz) crystal filter is both the roofing filter and the
-image filter for the second conversion: that conversion's image sits `2 × 12 kHz`
-= 24 kHz from the wanted 45 MHz signal, about 17 kHz into the filter's stopband,
-so it is rejected by 60 dB or more. The old 455 kHz IF existed only for analog
+Going from 21.4 MHz to a 12 kHz second IF in one step — with no 455 kHz stage in
+between — works because the **21.4 MHz crystal filter does double duty**. The
+selected part, an **NDK 21M15DJ** (8-pole, 15 kHz @ −3 dB, <3 dB insertion loss,
+1.5 kΩ termination — needs a matching network to the mixers' 50 Ω ports on both
+sides), is both the roofing filter and the image filter for the second
+conversion: that conversion's image sits `2 × 12 kHz` = 24 kHz from the wanted
+21.4 MHz signal, comfortably into the filter's skirt (65 dB @ ±17.5 kHz, 90 dB @
+±25 kHz), so it is well rejected. The old 455 kHz IF existed only for analog
 selectivity, and this radio does selectivity in DSP, so it earns nothing here.
-The 14 kHz passband is now the DSP's entire window, which covers CW, SSB, AM and
+The 15 kHz passband is now the DSP's entire window, which covers CW, SSB, AM and
 all the FreeDV modes; 2400B at 2.5 kHz deviation is about 11 kHz occupied and
 fits too.
 
@@ -145,17 +153,27 @@ ADE-1 diode ring mixer, and better close-in phase noise than a fractional-N part
 That matters because **LO1 phase noise sets close-in dynamic range** — its noise
 sidebands reciprocal-mix strong nearby signals straight into the IF, and on a
 crowded band that, not the roofing filter, is the limit. It is the one place where
-a cheap part would undo the reason for the whole architecture. LO2 is fixed, but
-it is a **second AD9851** rather than a plain crystal or a Si5351: LO2 drift maps
-1:1 onto the 12 kHz IF centre, so a garden-variety crystal there would need
-TCXO-grade stability anyway, and a custom-frequency TCXO at an oddball
-44.988 MHz is a slow, low-volume special order. A second AD9851 reuses LO1's
-buffer amp, filter and driver code, and — the real win — lets both DDS chips
-share one reference oscillator, so the whole radio needs only one precision
-reference, at a standard frequency, rather than hunting down two. Each AD9851
-needs an MMIC buffer to reach the +7 dBm the ADE-1 wants (its output is around
+a cheap part would undo the reason for the whole architecture. Its output needs
+an MMIC buffer to reach the +7 dBm the ADE-1 wants (its own output is around
 0 dBm), and its known weakness is spurs — birdies that move with tuning —
 mitigated, though not erased, by the band-pass bank.
+
+LO2 (fixed, 21.388 MHz) is a **plain crystal with software-controlled fine
+trim**, not a second DDS — a change from an earlier plan that used a second
+AD9851 specifically to avoid needing crystal-grade stability at an oddball
+frequency. Both objections behind that plan dissolved once a **WTL WX7
+21.388 MHz** crystal turned up as a standard stocked part rather than an
+oddball special order, and a varactor diode in its load-capacitance network
+(biased from a dedicated STM32 DAC channel — ordinary crystal-pulling/VXO)
+gives the fine trim a TCXO would otherwise have to provide. The trim loop is
+closed and self-calibrating: the STM32 measures LO2's actual frequency via
+timer input-capture and continuously re-adjusts the varactor bias, correcting
+both the crystal's initial tolerance and its ongoing temperature drift
+automatically in the field — worth having since this is a hiking rig expected
+to work down to roughly −10 °C. The loop is only as accurate as the yardstick
+it measures against, which is why the **STM32's own HSE is a TCXO**, not a
+plain crystal — needed anyway for accurate DSP sample-rate timing, so it was
+already the right part for that socket.
 
 LO control and band selection belong behind one thin hardware abstraction so
 the core stays shared. A single `set frequency` entry point works out which
@@ -277,4 +295,43 @@ The exciter is an **RD16HHF1**, chosen over the cheaper IRF510 because the
 IRF510 falls off at 28 MHz and 10 m matters; whether it stays push-pull (for
 even-order harmonic cancellation ahead of the TX low-pass bank) or drops to a
 single device now that the higher-power headroom isn't needed is still open.
+
+## CAT control and CW keyer
+
+The USB link exposes two ports off one composite device: the existing
+bidirectional Audio Class device for RX/TX audio, plus a CDC-ACM virtual
+serial port for CAT control, merged into a single hand-written USBD class
+(ST's CompositeBuilder middleware doesn't support a bidirectional custom
+audio class, so it wasn't an option). `cat_exec()`/`cat_poll()`/`cat_puts()`
+in `main.c` parse a small, self-designed, Kenwood-*flavored* ASCII protocol
+(`;`-terminated commands: `MD`/`FA`/`FB`/`TX`/`RX`/`IF`/`ID`/`MG`/`KS`/`PT`/
+`AS`/`KY`) — deliberately not byte-compatible with any real Kenwood rig's
+spec, since both ends of the link are this project's own code and gain
+nothing from matching a commercial rig exactly.
+
+A standalone Hamlib backend (`RIG_LA7LKA` family, model 45001, tracked as a
+patch directory at `hamlib-la7lka/` rather than a Hamlib fork, since
+Hamlib's internal APIs move even within its own dev tree) implements this
+protocol against the standard Hamlib API, so any Hamlib-based client
+(`rigctl`, `grig`, logging software) can drive the radio: `set_freq`/
+`get_freq`, `set_mode`/`get_mode`, `set_ptt`/`get_ptt`, the standard
+`RIG_LEVEL_MICGAIN`/`KEYSPD`/`CWPITCH` levels, a custom `AUDIOSRC` ext_level
+for the bench setup's analog-vs-USB audio routing, and the full Morse API
+(`send_morse`/`stop_morse`/`wait_morse`) wired to the CAT `KY;`/`KY<text>;`
+command below.
+
+CW itself has two independent send paths sharing one keyed-envelope/sidetone
+engine (`cw_tx_process_block()`): a **live key/paddle** input (straight key
+or iambic A/B keyer, menu-selectable, timed by the same WPM base as
+everything else CW) for hands-on operating, and a **message buffer**
+(`cw_msg[]`, up to 40 characters) for beacon/CQ-style sends, settable at
+runtime over CAT. `KY;` reads the current message; `KY<text>;` both stores
+new text and fires a one-shot send that auto-returns to receive when the
+message finishes — real Kenwood's actual `KY` semantics, matched here
+because it happens to be exactly what a computer-driven CW send needs. This
+is distinct from the plain `TX;`/console `tx` command, which still keys a
+looping beacon for RF bench testing with no key connected. Full break-in
+timing matters here too: TX hang time scales with WPM (10 dit-units) rather
+than a fixed value, so a normal inter-word gap at any speed doesn't trigger
+an unnecessary session restart between words.
 

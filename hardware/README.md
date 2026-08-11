@@ -18,7 +18,7 @@ interfaces the firmware uses (the 12 kHz IF, etc.), and each boundary doubles
 as a natural shield-can boundary.
 
 Going card-per-block rather than card-per-stage-group also pays off later:
-the whole HF front end (BPF/LPF/LNA/mixer/LO1/45 MHz filter/2nd
+the whole HF front end (BPF/LPF/LNA/mixer/LO1/21.4 MHz filter/2nd
 mixer+LO2/IF) is swappable as a unit behind the same 12 kHz IF and SMA
 interconnect, so a future VHF/UHF handheld variant reuses the Nucleo, LF and
 PIN T/R cards unchanged and only needs a new, much simpler front end — no
@@ -34,36 +34,44 @@ One card per block, plus a Nucleo-F746ZG as the MCU/DSP "card":
 | --- | --- |
 | BPF | RX band-pass filter bank |
 | LNA | Band-switched RX low-noise amp |
-| 1st mixer | ADE-1, shared bidirectional 1st mixer (RF ↔ 45 MHz) |
+| 1st mixer | ADE-1, shared bidirectional 1st mixer (RF ↔ 21.4 MHz) |
 | LO1 | AD9851 DDS, variable, isolated from the front end on its own card |
-| 45 MHz filter | The crystal filter shared by both conversions (roofing + 2nd-conversion image rejection) |
-| 2nd mixer + LO2 | BCM847 2nd mixers (RX and TX), LO2 fixed ~44.988 MHz — a second AD9851, not a crystal or Si5351 |
+| 21.4 MHz filter | NDK 21M15DJ crystal filter shared by both conversions (roofing + 2nd-conversion image rejection) |
+| 2nd mixer + LO2 | BCM847 2nd mixers (RX and TX), LO2 fixed 21.388 MHz — a plain crystal with STM32-driven varactor trim, not a second DDS |
 | IF | THAT2162 (RX AGC + TX ALC), op-amps, anti-alias/reconstruction LPFs, buffers to ADC1/DAC2 |
 | PA-driver | RD16HHF1 exciter, ~5 W out (pure QRP — Mk2 is not sized to drive an external amplifier); push-pull vs. single device still open |
 | LPF | TX low-pass filter bank |
 | SWR bridge | Directional coupler (fwd/rev), feeding ADC3's control scan for PA protection/foldback |
 | PIN T/R | Antenna transmit/receive switch, PIN diodes for QSK |
 | LF | Electret mic preamp → ADC2, LM386 speaker/headphone output from DAC1 — the first card being built, since it is pure audio and testable against the existing firmware with no RF involved |
-| HMI | Rotary encoder + 10 buttons + SSD1306 OLED + PTT, on the front panel — firmware side (`firmware/Core/Src/hmi.c`) proven on a Nucleo test board 2026-08-03: encoder/buttons/OLED/PTT/mode select all drive the real radio, not just a bench diagnostic |
+| HMI | Rotary encoder + 9 buttons + SSD1309 OLED + PTT + CW key/paddle jack, on the front panel — firmware side (`firmware/Core/Src/hmi.c`) proven on a Nucleo test board 2026-08-03: encoder/buttons/OLED/PTT/mode select all drive the real radio, not just a bench diagnostic. CW keyer (straight key + iambic A/B, menu-selectable) implemented 2026-08-11, real GPIO on PB10/PB11 |
 | BLE bridge | nRF52840 (reused USB dongle), bridging a free STM32 UART to the [flutter-app/](../flutter-app/) over Bluetooth Low Energy |
 
 The Nucleo's onboard USB (`USB_OTG_FS`) gives a second, wired control path —
-the same CDC-ACM console already used over the ST-Link VCP, so a PC/laptop
-gets full-menu control with no extra hardware. BLE (phone) and USB (PC) are
-the two transports for the same menu/CAT-style control plus HF text
-messaging; see [flutter-app/](../flutter-app/).
+a composite device carrying the existing bidirectional Audio Class interface
+plus a CDC-ACM virtual serial port for CAT control (a Kenwood-flavored ASCII
+protocol, `firmware/Core/Src/main.c`'s `cat_exec()`, backed by a standalone
+Hamlib rig backend — see [doc/architecture.md](../doc/architecture.md#cat-control-and-cw-keyer)),
+so a PC/laptop gets full CAT control over the same cable that already carries
+RX/TX audio, no extra hardware. BLE (phone) and USB (PC) are the two
+transports for the same menu/CAT-style control plus HF text messaging; see
+[flutter-app/](../flutter-app/).
 
-**Both LOs are AD9851, not an AD9851 + a fixed oscillator.** LO2 only needs a
-fixed ~44.988 MHz, but a plain crystal there would need TCXO-grade stability
-anyway — LO2 drift maps 1:1 onto the 12 kHz IF centre, and a garden-variety
-±20–50 ppm crystal at 45 MHz can drift over 1 kHz across temperature, a real
-bite out of a 14 kHz roofing filter. A custom-frequency TCXO to fix that is a
-low-volume special order (MOQ, weeks of lead time) for an oddball 44.988 MHz.
-A second AD9851 instead reuses the LO1 card's buffer amp, LPF and driver code
-nearly unchanged, and — the actual win — lets both DDS chips share **one**
-reference oscillator, so the whole radio needs only one precision reference,
-at a standard frequency, rather than two. LO2's exact output can then be
-trimmed in firmware instead of needing an exact crystal cut.
+**LO1 is an AD9851 DDS; LO2 is a plain crystal with software-controlled fine
+trim, not a second DDS.** An earlier plan used a second AD9851 for LO2
+specifically to avoid needing crystal-grade stability at an oddball fixed
+frequency (LO2 drift maps 1:1 onto the 12 kHz IF centre). Both objections
+dissolved once a **WTL WX7 21.388 MHz** crystal turned up as a standard
+stocked part rather than an oddball special order: a varactor diode in its
+load-capacitance network, biased from a dedicated STM32 DAC channel
+(ordinary crystal-pulling/VXO), gives the fine trim a TCXO would otherwise
+have to provide. The STM32 closes the loop itself — measuring LO2's actual
+frequency via timer input-capture and continuously re-adjusting the varactor
+bias — correcting both the crystal's initial tolerance and its ongoing
+temperature drift automatically in the field, useful since this is a hiking
+rig expected to work down to roughly −10 °C. That loop is only as accurate
+as the STM32's own reference, which is why the Nucleo's HSE is a TCXO rather
+than a plain crystal (needed anyway for accurate DSP sample-rate timing).
 
 RX and TX filter banks are separate cards on purpose: RX wants band-pass
 (reject out-of-band and image), TX wants low-pass (reject harmonics), and it
