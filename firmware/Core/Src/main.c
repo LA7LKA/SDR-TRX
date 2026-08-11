@@ -2406,12 +2406,17 @@ void radio_tx_off(void);
  * element-by-element keying happens separately, at sample rate, in
  * cw_keyer_tick() inside cw_tx_process_block() above.
  */
-#define CW_KEYER_HANG_MS 300U   /* how long the key/paddle can sit idle
-                                    mid-session before TX drops - long
-                                    enough to cover normal inter-word
-                                    pauses at low WPM, short enough that
-                                    letting go for good ends the over
-                                    reasonably promptly */
+/* How long the key/paddle can sit idle mid-session before TX drops.
+   MUST scale with WPM, not be a fixed duration: a normal inter-word gap
+   is 7 dit-units, which at the default 20 WPM alone is already 420 ms -
+   a fixed 300 ms (the original value here) dropped TX, and paid the full
+   radio_tx_on()/DMA-reset cost, between every single word, which is
+   exactly the "feels slow" Oystein hit testing with jumper wires. 10 dit
+   units gives clear margin over the 7-unit word gap at any speed, while
+   still ending a genuinely-finished over reasonably promptly - and
+   because it's dit-unit-based, it stays correct automatically as WPM
+   (cw_dit_samples) changes, instead of needing retuning per speed. */
+#define CW_KEYER_HANG_DIT_UNITS 10U
 
 void cw_keyer_poll(void)
 {
@@ -2423,6 +2428,7 @@ void cw_keyer_poll(void)
     uint8_t active = cw_paddle_dit_read()
                     || (cw_keyer_type != CW_KEYER_STRAIGHT && cw_paddle_dah_read());
     uint32_t now = HAL_GetTick();
+    uint32_t hang_ms = (cw_dit_samples * CW_KEYER_HANG_DIT_UNITS) / 48U;  /* samples -> ms at 48 kHz */
 
     if (active)
     {
@@ -2433,7 +2439,7 @@ void cw_keyer_poll(void)
             radio_tx_on();
         }
     }
-    else if (tx_active && cw_tx_source_live && (now - last_active_tick) >= CW_KEYER_HANG_MS)
+    else if (tx_active && cw_tx_source_live && (now - last_active_tick) >= hang_ms)
     {
         radio_tx_off();
         cw_tx_source_live = 0;
