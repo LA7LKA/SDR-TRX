@@ -31,6 +31,17 @@
  *                digit + 1 PTT digit ('1'=TX/'0'=RX) + ";". NOT real
  *                Kenwood's IF; layout.
  *    ID;       - fixed "ID019;" reply.
+ *    MG;/MGnnn;  - mic gain, 3 digits, range 1-200 -> RIG_LEVEL_MICGAIN
+ *                  (normalized float 0.0-1.0 per Hamlib convention, scaled
+ *                  to/from the radio's own 1-200 range here).
+ *    KS;/KSnn;   - CW keying speed (WPM), 2 digits, range 5-60 ->
+ *                  RIG_LEVEL_KEYSPD (raw int, no scaling).
+ *    PT;/PTnnnn; - CW sidetone/RX pitch (Hz), 4 digits, range 300-1000 ->
+ *                  RIG_LEVEL_CWPITCH (raw int, no scaling).
+ *    AS;/AS0;/AS1; - audio source, 0=analog ADC/DAC, 1=USB. No standard
+ *                  Hamlib level/func fits this (it's this bench setup's
+ *                  own concept, not a real rig control), so it's exposed
+ *                  as a custom ext_level combo instead.
  */
 
 #include "hamlib/config.h"
@@ -44,6 +55,8 @@
 #include "hamlib/rig_state.h"
 #include "iofunc.h"
 #include "register.h"
+#include "idx_builtin.h"
+#include "token.h"
 
 /* Byte layout of the IF; reply payload, after stripping the trailing
    '\r'/'\n' and ';' (see la7lka_transaction()) - named offsets rather
@@ -206,6 +219,114 @@ static const char *la7lka_get_info(RIG *rig)
     return reply;
 }
 
+/* Standard levels: MICGAIN (float, normalized 0.0-1.0 per Hamlib
+   convention - RIG_LEVEL_IS_FLOAT(RIG_LEVEL_MICGAIN) - scaled to/from the
+   radio's own 1-200 integer range), KEYSPD and CWPITCH (both raw int, no
+   scaling, passed straight through). */
+static int la7lka_set_level(RIG *rig, vfo_t vfo, setting_t level, value_t val)
+{
+    char cmd[16];
+
+    (void)vfo;
+    switch (level)
+    {
+        case RIG_LEVEL_MICGAIN:
+        {
+            int n = (int)(val.f * 199.0f + 0.5f) + 1;
+            if (n < 1)   n = 1;
+            if (n > 200) n = 200;
+            snprintf(cmd, sizeof(cmd), "MG%03d", n);
+            return la7lka_transaction(rig, cmd, NULL, 0, 0);
+        }
+        case RIG_LEVEL_KEYSPD:
+            snprintf(cmd, sizeof(cmd), "KS%02d", val.i);
+            return la7lka_transaction(rig, cmd, NULL, 0, 0);
+        case RIG_LEVEL_CWPITCH:
+            snprintf(cmd, sizeof(cmd), "PT%04d", val.i);
+            return la7lka_transaction(rig, cmd, NULL, 0, 0);
+        default:
+            return -RIG_EINVAL;
+    }
+}
+
+static int la7lka_get_level(RIG *rig, vfo_t vfo, setting_t level, value_t *val)
+{
+    char reply[16];
+    int ret;
+
+    (void)vfo;
+    switch (level)
+    {
+        case RIG_LEVEL_MICGAIN:
+            ret = la7lka_transaction(rig, "MG", reply, sizeof(reply), 1);
+            if (ret != RIG_OK) return ret;
+            if (strlen(reply) < 5) return -RIG_EPROTO;
+            val->f = (atoi(reply + 2) - 1) / 199.0f;
+            if (val->f < 0.0f) val->f = 0.0f;
+            if (val->f > 1.0f) val->f = 1.0f;
+            return RIG_OK;
+        case RIG_LEVEL_KEYSPD:
+            ret = la7lka_transaction(rig, "KS", reply, sizeof(reply), 1);
+            if (ret != RIG_OK) return ret;
+            if (strlen(reply) < 4) return -RIG_EPROTO;
+            val->i = atoi(reply + 2);
+            return RIG_OK;
+        case RIG_LEVEL_CWPITCH:
+            ret = la7lka_transaction(rig, "PT", reply, sizeof(reply), 1);
+            if (ret != RIG_OK) return ret;
+            if (strlen(reply) < 6) return -RIG_EPROTO;
+            val->i = atoi(reply + 2);
+            return RIG_OK;
+        default:
+            return -RIG_EINVAL;
+    }
+}
+
+/* Custom ext_level: audio source (analog ADC/DAC vs USB). No standard
+   Hamlib level/func fits a concept this specific to a bench setup with
+   two selectable audio paths. */
+#define TOK_AUDIO_SOURCE TOKEN_BACKEND(1)
+
+static int la7lka_ext_tokens[] =
+{
+    TOK_AUDIO_SOURCE,
+    TOK_BACKEND_NONE,
+};
+
+static const struct confparams la7lka_ext_levels[] =
+{
+    {
+        TOK_AUDIO_SOURCE, "AUDIOSRC", "Audio source", "Audio routing: analog ADC/DAC or USB",
+        NULL, RIG_CONF_COMBO, { .c = { .combostr = { "Analog", "USB", NULL } } }
+    },
+    { RIG_CONF_END, NULL, }
+};
+
+static int la7lka_set_ext_level(RIG *rig, vfo_t vfo, hamlib_token_t token, value_t val)
+{
+    (void)vfo;
+    if (token != TOK_AUDIO_SOURCE) return -RIG_EINVAL;
+    if (val.i != 0 && val.i != 1) return -RIG_EINVAL;
+
+    return la7lka_transaction(rig, val.i ? "AS1" : "AS0", NULL, 0, 0);
+}
+
+static int la7lka_get_ext_level(RIG *rig, vfo_t vfo, hamlib_token_t token, value_t *val)
+{
+    char reply[8];
+    int ret;
+
+    (void)vfo;
+    if (token != TOK_AUDIO_SOURCE) return -RIG_EINVAL;
+
+    ret = la7lka_transaction(rig, "AS", reply, sizeof(reply), 1);
+    if (ret != RIG_OK) return ret;
+    if (strlen(reply) < 3) return -RIG_EPROTO;
+
+    val->i = (reply[2] == '1') ? 1 : 0;
+    return RIG_OK;
+}
+
 struct rig_caps la7lka_caps =
 {
     RIG_MODEL(RIG_MODEL_LA7LKA_TRX),
@@ -243,6 +364,16 @@ struct rig_caps la7lka_caps =
     .rx_range_list2 = { RIG_FRNG_END, },
     .tx_range_list2 = { RIG_FRNG_END, },
 
+    .has_get_level = RIG_LEVEL_MICGAIN | RIG_LEVEL_KEYSPD | RIG_LEVEL_CWPITCH,
+    .has_set_level = RIG_LEVEL_MICGAIN | RIG_LEVEL_KEYSPD | RIG_LEVEL_CWPITCH,
+    .level_gran = {
+        [LVL_MICGAIN]  = { .min = { .f = 0.0f }, .max = { .f = 1.0f }, .step = { .f = 1.0f / 199.0f } },
+        [LVL_KEYSPD]   = { .min = { .i = 5 },    .max = { .i = 60 },   .step = { .i = 1 } },
+        [LVL_CWPITCH]  = { .min = { .i = 300 },  .max = { .i = 1000 }, .step = { .i = 50 } },
+    },
+    .ext_tokens = la7lka_ext_tokens,
+    .extlevels  = la7lka_ext_levels,
+
     .set_freq = la7lka_set_freq,
     .get_freq = la7lka_get_freq,
     .set_mode = la7lka_set_mode,
@@ -250,6 +381,10 @@ struct rig_caps la7lka_caps =
     .set_ptt  = la7lka_set_ptt,
     .get_ptt  = la7lka_get_ptt,
     .get_info = la7lka_get_info,
+    .set_level = la7lka_set_level,
+    .get_level = la7lka_get_level,
+    .set_ext_level = la7lka_set_ext_level,
+    .get_ext_level = la7lka_get_ext_level,
 
     .hamlib_check_rig_caps = HAMLIB_CHECK_RIG_CAPS,
 };

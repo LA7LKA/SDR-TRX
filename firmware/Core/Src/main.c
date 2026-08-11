@@ -2713,6 +2713,18 @@ static void console_poll(void)
                 PTT digit ('1'=TX/'0'=RX) + ";" - NOT real Kenwood's 38-byte
                 IF; layout, see the CAT plan for why that's unnecessary here
    ID;        - fixed reply, lets a Hamlib open() sequence complete quickly
+   MG;/MGnnn; - get/set mic gain, 3 digits, range 1-200 (same as the
+                console's "mic <n>"; real Kenwood MG is 0-100, ours isn't
+                spec-bound so it keeps this project's own existing range)
+   KS;/KSnn;  - get/set CW keying speed (WPM), 2 digits, range 5-60 (same
+                as the console's "wpm <n>"; digit count matches real
+                Kenwood's KS, chosen for familiarity, not required)
+   PT;/PTnnnn;- get/set CW sidetone/RX pitch in Hz, 4 digits, range
+                300-1000 (cw_set_pitch() already clamps to this - no real
+                Kenwood equivalent, this project's own command)
+   AS;/AS0;/AS1; - get/set audio source, 0=analog ADC/DAC, 1=USB (same as
+                the console's "src usb|analog"; no real Kenwood equivalent,
+                this bench setup's own concept)
 
    Replies go out via cat_puts(), never uart_puts() - the transport fix
    this replaces the old console_exec()-forwarding stub with. */
@@ -2803,6 +2815,64 @@ static void cat_exec(char *line)
     else if (line[0] == 'I' && line[1] == 'D')
     {
         cat_puts("ID019;\r\n");
+    }
+    else if (line[0] == 'M' && line[1] == 'G')
+    {
+        if (line[2] == 0)
+        {
+            snprintf(reply, sizeof(reply), "MG%03d;\r\n", (int)mic_gain);
+            cat_puts(reply);
+        }
+        else
+        {
+            int n = (int)strtol(&line[2], NULL, 10);
+            if (n >= 1 && n <= 200)
+                mic_gain = (float)n;
+        }
+    }
+    else if (line[0] == 'K' && line[1] == 'S')
+    {
+        if (line[2] == 0)
+        {
+            snprintf(reply, sizeof(reply), "KS%02d;\r\n", cw_get_wpm());
+            cat_puts(reply);
+        }
+        else
+        {
+            int n = (int)strtol(&line[2], NULL, 10);
+            if (n >= 5 && n <= 60)
+                cw_set_wpm(n);
+        }
+    }
+    else if (line[0] == 'P' && line[1] == 'T')
+    {
+        if (line[2] == 0)
+        {
+            snprintf(reply, sizeof(reply), "PT%04d;\r\n", (int)cw_pitch_hz);
+            cat_puts(reply);
+        }
+        else
+        {
+            /* cw_set_pitch() already clamps to 300-1000 Hz internally,
+               same as the HMI encoder's own calls to it. */
+            cw_set_pitch((float)strtol(&line[2], NULL, 10));
+        }
+    }
+    else if (line[0] == 'A' && line[1] == 'S')
+    {
+        if (line[2] == 0)
+        {
+            snprintf(reply, sizeof(reply), "AS%d;\r\n", audio_source_is_usb() ? 1 : 0);
+            cat_puts(reply);
+        }
+        else if (line[2] == '0')
+        {
+            audio_source_set(AUDIO_SRC_ANALOG);
+        }
+        else if (line[2] == '1')
+        {
+            audio_source_set(AUDIO_SRC_USB);
+        }
     }
 }
 

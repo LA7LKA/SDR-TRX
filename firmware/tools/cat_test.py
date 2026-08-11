@@ -119,9 +119,50 @@ results.append(("IF; full field layout (freq+mode+ptt)", "FA00021200000;/MD3;/IF
 # --- Unknown command / empty line: silently ignored ---
 check("Unknown command ignored", "ZZ", False, None)
 
-# --- restore a sane default end state: USB, RX (already RX), 20 m ---
+# --- Mic gain: MG;/MGnnn;, range 1-200, 3 digits ---
+send(ser, "MG150", expect_reply=False)
+reply = send(ser, "MG", expect_reply=True)
+ok = reply == "MG150;"
+results.append(("Set+get mic gain", "MG150; / MG;", reply, "PASS" if ok else "FAIL", ""))
+
+# --- CW keying speed: KS;/KSnn;, range 5-60, 2 digits ---
+send(ser, "KS35", expect_reply=False)
+reply = send(ser, "KS", expect_reply=True)
+ok = reply == "KS35;"
+results.append(("Set+get CW speed (WPM)", "KS35; / KS;", reply, "PASS" if ok else "FAIL", ""))
+
+# --- CW pitch: PT;/PTnnnn;, range 300-1000, 4 digits ---
+send(ser, "PT0550", expect_reply=False)
+reply = send(ser, "PT", expect_reply=True)
+ok = reply == "PT0550;"
+results.append(("Set+get CW pitch (Hz)", "PT0550; / PT;", reply, "PASS" if ok else "FAIL", ""))
+
+# Out-of-range pitch should clamp (cw_set_pitch() clamps internally to 300-1000)
+send(ser, "PT9999", expect_reply=False)
+reply = send(ser, "PT", expect_reply=True)
+ok = reply == "PT1000;"
+results.append(("CW pitch clamps to max (1000 Hz)", "PT9999; / PT;", reply, "PASS" if ok else "FAIL",
+                 "cw_set_pitch() clamps internally"))
+
+# --- Audio source: AS;/AS0;/AS1; ---
+send(ser, "AS1", expect_reply=False)
+reply = send(ser, "AS", expect_reply=True)
+ok = reply == "AS1;"
+results.append(("Set+get audio source USB", "AS1; / AS;", reply, "PASS" if ok else "FAIL", ""))
+
+send(ser, "AS0", expect_reply=False)
+reply = send(ser, "AS", expect_reply=True)
+ok = reply == "AS0;"
+results.append(("Set+get audio source analog", "AS0; / AS;", reply, "PASS" if ok else "FAIL", ""))
+
+# --- restore a sane default end state: USB, RX (already RX), 20 m,
+#     default mic gain / CW speed / pitch / analog audio source ---
 send(ser, "MD2", expect_reply=False)
 send(ser, "FA00014200000", expect_reply=False)
+send(ser, "MG001", expect_reply=False)
+send(ser, "KS20", expect_reply=False)
+send(ser, "PT0700", expect_reply=False)
+send(ser, "AS0", expect_reply=False)
 send(ser, "RX", expect_reply=False)
 
 ser.close()
