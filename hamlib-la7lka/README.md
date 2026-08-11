@@ -23,6 +23,20 @@ Hamlib levels `RIG_LEVEL_MICGAIN`/`RIG_LEVEL_KEYSPD`/`RIG_LEVEL_CWPITCH`,
 and audio source (analog ADC/DAC vs USB - a bench-setup concept with no
 standard Hamlib equivalent) as a custom `AUDIOSRC` ext_level combo.
 
+`send_morse()`/`stop_morse()`/`wait_morse()` wire the CAT `KY;`/`KY<text>;`
+command (firmware's dynamic CW message + one-shot send) to Hamlib's
+standard Morse API: `send_morse()` maps straight to `KY<text>;`,
+`stop_morse()` sends `RX;` (already aborts a one-shot send in firmware,
+no dedicated abort command needed), `wait_morse()` is just Hamlib's
+generic `rig_wait_morse()` (polls `get_ptt()` until it drops), same idiom
+every other backend uses. `.morse_qsize` is set to the firmware's
+`CW_MSG_MAXLEN` (40) so a message that fits arrives as a single queued
+chunk/single `send_morse()` call - Hamlib's generic `rig_send_morse()`
+queues text through a background thread and re-invokes `send_morse()`
+once per chunk, and since this firmware always replaces-and-restarts the
+message on `KY;` (no append semantics), a message split across multiple
+chunks would restart itself mid-send rather than concatenating.
+
 ## Applying to a fresh Hamlib checkout
 
 ```sh

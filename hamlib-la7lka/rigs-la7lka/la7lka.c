@@ -42,6 +42,11 @@
  *                  Hamlib level/func fits this (it's this bench setup's
  *                  own concept, not a real rig control), so it's exposed
  *                  as a custom ext_level combo instead.
+ *    KY;/KY<text>; - get/set+send the CW message buffer. KY<text>; both
+ *                  stores the text AND triggers a one-shot send that
+ *                  auto-returns to RX when done (real Kenwood's actual KY
+ *                  semantics - "send this now", not just "remember this
+ *                  for later") -> send_morse().
  */
 
 #include "hamlib/config.h"
@@ -67,6 +72,11 @@
 #define LA7LKA_IF_MODE_OFFSET  (LA7LKA_IF_FREQ_OFFSET + LA7LKA_IF_FREQ_LEN)   /* 13 */
 #define LA7LKA_IF_PTT_OFFSET   (LA7LKA_IF_MODE_OFFSET + 1)                    /* 14 */
 #define LA7LKA_IF_LEN          (LA7LKA_IF_PTT_OFFSET + 1)                     /* 15 */
+
+/* Must match CW_MSG_MAXLEN in main.c's cat_exec()/cw_set_message() - the
+   firmware's message buffer is fixed-size, so a longer send_morse() text
+   gets silently truncated by the firmware itself, not rejected here. */
+#define LA7LKA_MORSE_MAXLEN 40
 
 static const struct { rmode_t mode; char kw; } la7lka_mode_table[] = {
     { RIG_MODE_LSB, '1' },
@@ -111,7 +121,8 @@ static rmode_t la7lka_kw_to_mode(char c)
 static int la7lka_transaction(RIG *rig, const char *cmd, char *reply, size_t replysz, int expect_reply)
 {
     hamlib_port_t *rp = RIGPORT(rig);
-    char buf[32];
+    /* Longest command is "KY" + up to LA7LKA_MORSE_MAXLEN text chars. */
+    char buf[2 + LA7LKA_MORSE_MAXLEN + 2];
     size_t len = strlen(cmd);
     int ret;
 
@@ -217,6 +228,37 @@ static const char *la7lka_get_info(RIG *rig)
     ret = la7lka_transaction(rig, "ID", reply, sizeof(reply), 1);
     if (ret != RIG_OK) return NULL;
     return reply;
+}
+
+/* KY<text>; both sets the message buffer AND fires a one-shot send that
+   auto-returns to RX on completion - real Kenwood's actual KY semantics,
+   kept for familiarity and because it's exactly what's needed here. No
+   reply, same fire-and-forget convention as TX;/RX;. Hamlib's generic
+   rig_send_morse() queues msg through rs->fifo_morse and the
+   morse_data_handler thread calls this once per queued chunk
+   (.morse_qsize below is set to LA7LKA_MORSE_MAXLEN so a message that
+   fits the radio's own buffer arrives as a single chunk/single call - a
+   message queued in multiple chunks would re-trigger KY; per chunk,
+   restarting the one-shot send each time rather than concatenating,
+   since the firmware always replaces-and-restarts on KY;). */
+static int la7lka_send_morse(RIG *rig, vfo_t vfo, const char *msg)
+{
+    char cmd[2 + LA7LKA_MORSE_MAXLEN + 1];
+
+    (void)vfo;
+    if (!msg) return -RIG_EINVAL;
+
+    snprintf(cmd, sizeof(cmd), "KY%s", msg);
+    return la7lka_transaction(rig, cmd, NULL, 0, 0);
+}
+
+/* No dedicated "abort CW" command on the wire - RX; already does exactly
+   this (radio_tx_off() in main.c clears the one-shot state and un-keys),
+   same as it does for a live TX session. */
+static int la7lka_stop_morse(RIG *rig, vfo_t vfo)
+{
+    (void)vfo;
+    return la7lka_transaction(rig, "RX", NULL, 0, 0);
 }
 
 /* Standard levels: MICGAIN (float, normalized 0.0-1.0 per Hamlib
@@ -373,6 +415,7 @@ struct rig_caps la7lka_caps =
     },
     .ext_tokens = la7lka_ext_tokens,
     .extlevels  = la7lka_ext_levels,
+    .morse_qsize = LA7LKA_MORSE_MAXLEN,
 
     .set_freq = la7lka_set_freq,
     .get_freq = la7lka_get_freq,
@@ -385,6 +428,9 @@ struct rig_caps la7lka_caps =
     .get_level = la7lka_get_level,
     .set_ext_level = la7lka_set_ext_level,
     .get_ext_level = la7lka_get_ext_level,
+    .send_morse = la7lka_send_morse,
+    .stop_morse = la7lka_stop_morse,
+    .wait_morse = rig_wait_morse,
 
     .hamlib_check_rig_caps = HAMLIB_CHECK_RIG_CAPS,
 };
