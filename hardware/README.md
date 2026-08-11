@@ -32,7 +32,7 @@ One card per block, plus a Nucleo-F746ZG as the MCU/DSP "card":
 
 | Card | Contents |
 | --- | --- |
-| BPF | RX band-pass filter bank |
+| BPF | RX band-pass filter bank — component values start from the [QRP Labs BPF kit reference](qrp-labs-filter-reference.md) |
 | LNA | Band-switched RX low-noise amp |
 | 1st mixer | ADE-1, shared bidirectional 1st mixer (RF ↔ 21.4 MHz) |
 | LO1 | AD9851 DDS, variable, isolated from the front end on its own card |
@@ -40,7 +40,7 @@ One card per block, plus a Nucleo-F746ZG as the MCU/DSP "card":
 | 2nd mixer + LO2 | BCM847 2nd mixers (RX and TX), LO2 fixed 21.388 MHz — a plain crystal with STM32-driven varactor trim, not a second DDS |
 | IF | THAT2162 (RX AGC + TX ALC), op-amps, anti-alias/reconstruction LPFs, buffers to ADC1/DAC2 |
 | PA-driver | RD16HHF1 exciter, ~5 W out (pure QRP — Mk2 is not sized to drive an external amplifier); push-pull vs. single device still open |
-| LPF | TX low-pass filter bank |
+| LPF | TX low-pass filter bank — component values start from the [QRP Labs LPF kit reference](qrp-labs-filter-reference.md) (W3NQN/G-QRP 7-element design) |
 | SWR bridge | Directional coupler (fwd/rev), feeding ADC3's control scan for PA protection/foldback |
 | PIN T/R | Antenna transmit/receive switch, PIN diodes for QSK |
 | LF | Electret mic preamp → ADC2, LM386 speaker/headphone output from DAC1 — the first card being built, since it is pure audio and testable against the existing firmware with no RF involved |
