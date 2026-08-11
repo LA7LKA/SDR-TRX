@@ -155,15 +155,55 @@ reply = send(ser, "AS", expect_reply=True)
 ok = reply == "AS0;"
 results.append(("Set+get audio source analog", "AS0; / AS;", reply, "PASS" if ok else "FAIL", ""))
 
+# --- CW message: KY; (get), KY<text>; (set + one-shot send) ---
+# Message text persists across power cycles of the test only within this
+# run - KY; just echoes whatever's currently stored, which may be left
+# over from a previous manual test, not necessarily the firmware's
+# power-on default ("LA7LKA DE LB2S LB2S LB2S"). Just confirm it's a
+# well-formed, non-empty reply here; the round-trip below is the real test.
+DEFAULT_MSG = "LA7LKA DE LB2S LB2S LB2S"
+reply = send(ser, "KY", expect_reply=True)
+ok = reply.startswith("KY") and reply.endswith(";") and len(reply) > 3
+results.append(("Get current CW message (well-formed)", "KY;", reply, "PASS" if ok else "FAIL", ""))
+
+# Speed it up so the one-shot send doesn't eat the test's wall-clock budget
+send(ser, "KS30", expect_reply=False)
+
+TEST_MSG = "TEST"
+send(ser, f"KY{TEST_MSG}", expect_reply=False)
+reply_tx_if = send(ser, "IF", expect_reply=True)
+tx_ok = len(reply_tx_if) >= 15 and reply_tx_if[14] == "1"
+results.append(("KY<text>; keys PTT (one-shot send starts)", f"KY{TEST_MSG}; / IF;",
+                 reply_tx_if, "PASS" if tx_ok else "FAIL", ""))
+
+# Poll until the one-shot send completes and PTT drops back to RX on its own
+deadline = time.time() + 15.0
+ptt = "1"
+while time.time() < deadline:
+    r = send(ser, "IF", expect_reply=True)
+    if len(r) >= 15:
+        ptt = r[14]
+    if ptt == "0":
+        break
+    time.sleep(0.2)
+results.append(("KY one-shot send auto-returns to RX", "IF; (polled)", f"PTT={ptt}",
+                 "PASS" if ptt == "0" else "FAIL", "waited up to 15s"))
+
+reply = send(ser, "KY", expect_reply=True)
+ok = reply == f"KY{TEST_MSG};"
+results.append(("KY message persists after send", "KY;", reply, "PASS" if ok else "FAIL", ""))
+
 # --- restore a sane default end state: USB, RX (already RX), 20 m,
-#     default mic gain / CW speed / pitch / analog audio source ---
+#     default mic gain / CW speed / pitch / audio source / CW message ---
 send(ser, "MD2", expect_reply=False)
 send(ser, "FA00014200000", expect_reply=False)
 send(ser, "MG001", expect_reply=False)
 send(ser, "KS20", expect_reply=False)
 send(ser, "PT0700", expect_reply=False)
 send(ser, "AS0", expect_reply=False)
-send(ser, "RX", expect_reply=False)
+send(ser, f"KY{DEFAULT_MSG}", expect_reply=False)  # restores text; also fires a one-shot send
+time.sleep(0.5)
+send(ser, "RX", expect_reply=False)  # cut it short, we only needed the text restored
 
 ser.close()
 

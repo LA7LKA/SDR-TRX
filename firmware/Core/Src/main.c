@@ -2080,7 +2080,12 @@ void ssb_tx_process_block(const uint16_t *in, uint16_t *out, int n)
  * milliseconds long.
  * --------------------------------------------------------------------- */
 
-#define CW_MSG      "LA7LKA DE LB2S LB2S LB2S"
+#define CW_MSG_DEFAULT "LA7LKA DE LB2S LB2S LB2S"
+#define CW_MSG_MAXLEN  40                   /* text chars; cw_build_message()
+                                                already bounds-checks against
+                                                CW_UNITS below, so an
+                                                over-length message just gets
+                                                truncated safely, not overrun */
 #define CW_UNITS    256                     /* dit units in the keyed message */
 #define CW_RAMP     240                     /* 5 ms edge at 48 kHz */
 
@@ -2114,6 +2119,18 @@ static int      cw_unit;            /* index into cw_key */
 static uint32_t cw_tick;            /* samples into the current unit */
 static float    cw_env;             /* shaped envelope, 0..1 */
 static int      cw_ramp;            /* position within an edge */
+
+/* CAT "KY;"-triggered one-shot send (see cw_set_message()): unlike the
+   looping beacon (plain "tx"/CAT "TX;", unchanged), a KY-triggered
+   message should auto-return to RX after one pass. cw_msg_wrapped is set
+   by cw_tx_process_block() when cw_key[] wraps back to 0 during a
+   one-shot send; cw_keyer_poll() (main-loop rate, same place PTT-style
+   session control already lives) acts on it. Deliberately not checked
+   during live keying (cw_tx_source_live) - the two are mutually
+   exclusive in practice (KY never sets cw_tx_source_live, the live
+   paddle never sets cw_msg_oneshot). */
+static volatile int cw_msg_oneshot;
+static volatile int cw_msg_wrapped;
 
 static float    cw_osc_re = 1.0f, cw_osc_im = 0.0f;
 static float    cw_step_re, cw_step_im;
@@ -2271,11 +2288,42 @@ static int cw_keyer_tick(void)
     }
 }
 
+/*
+ * Message text: was a fixed CW_MSG #define (a beacon, sent on plain
+ * "tx"/CAT "TX;", loops forever - unchanged default behavior, see
+ * cw_tx_process_block()). Now also settable at runtime via the CAT "KY;"
+ * command (real Kenwood's actual "send this text now via the keyer"
+ * command - kept for familiarity, and because it happens to be exactly
+ * what's needed here) and Hamlib's send_morse() hook. Setting via KY;
+ * additionally triggers a ONE-SHOT send (cw_msg_oneshot below) that
+ * auto-returns to RX after one pass, unlike the looping beacon - see
+ * cw_keyer_poll()'s completion check. */
+static char cw_msg[CW_MSG_MAXLEN + 1] = CW_MSG_DEFAULT;
+
+void cw_set_message(const char *text)
+{
+    size_t i;
+
+    for (i = 0; i < CW_MSG_MAXLEN && text[i]; i++)
+    {
+        char c = text[i];
+        if (c >= 'a' && c <= 'z') c -= 32;  /* cw_morse()'s table is A-Z only */
+        cw_msg[i] = c;
+    }
+    cw_msg[i] = 0;
+
+    cw_key_len = 0;   /* force cw_build_message() to rebuild from the new
+                          text - it's normally built once, lazily, and
+                          cached forever (see cw_tx_restart()) */
+}
+
+const char *cw_get_message(void) { return cw_msg; }
+
 static void cw_build_message(void)
 {
     int n = 0;
 
-    for (const char *p = CW_MSG; *p; p++)
+    for (const char *p = cw_msg; *p; p++)
     {
         if (*p == ' ')
         {
@@ -2348,7 +2396,11 @@ void cw_tx_process_block(uint16_t *out, uint16_t *side_out, int n)
         if (++cw_tick >= cw_dit_samples)
         {
             cw_tick = 0;
-            if (++cw_unit >= cw_key_len) cw_unit = 0;
+            if (++cw_unit >= cw_key_len)
+            {
+                cw_unit = 0;
+                if (!cw_tx_source_live && cw_msg_oneshot) cw_msg_wrapped = 1;
+            }
         }
 
         /* Raised-cosine edge, so the spectrum stays where it belongs. */
@@ -2425,6 +2477,14 @@ void cw_keyer_poll(void)
     if (MODE != MODE_CW)
         return;
 
+    /* KY-triggered one-shot message finished its one pass - auto-return
+       to RX, unlike the looping beacon. Checked here since this already
+       runs every main-loop iteration while in CW mode. */
+    if (cw_msg_oneshot && cw_msg_wrapped)
+    {
+        radio_tx_off();
+    }
+
     uint8_t active = cw_paddle_dit_read()
                     || (cw_keyer_type != CW_KEYER_STRAIGHT && cw_paddle_dah_read());
     uint32_t now = HAL_GetTick();
@@ -2441,8 +2501,7 @@ void cw_keyer_poll(void)
     }
     else if (tx_active && cw_tx_source_live && (now - last_active_tick) >= hang_ms)
     {
-        radio_tx_off();
-        cw_tx_source_live = 0;
+        radio_tx_off();   /* clears cw_tx_source_live itself */
     }
 }
 
@@ -2678,6 +2737,14 @@ int radio_tx_on(void)
 void radio_tx_off(void)
 {
     tx_active = 0;
+    cw_tx_source_live = 0;   /* defensive reset - every path that stops TX
+                                 (console/CAT "rx", HMI PTT/TUNE release,
+                                 the KY one-shot completion check) should
+                                 leave these clean for the next session,
+                                 not just the paths that happened to set
+                                 them */
+    cw_msg_oneshot = 0;
+    cw_msg_wrapped = 0;
     if (mode_is_freedv(MODE) && freedv_ok) freedv_chain_set_tx(0);
     USBD_AUDIO_DUPLEX_ResetMic(&hUsbDeviceFS);  /* same reasoning as radio_tx_on() - back to usb_audio_rx_capture() as the producer now */
     dsp_filters_init();    /* see radio_tx_on() - same gap, same fix */
@@ -2969,7 +3036,7 @@ void cat_puts(const char *s);
 static void cat_exec(char *line)
 {
     size_t len = strlen(line);
-    char reply[24];
+    char reply[48];   /* KY's reply is the longest: "KY" + up to CW_MSG_MAXLEN + ";\r\n" */
 
     if (len && line[len - 1] == ';')
         line[--len] = 0;
@@ -3014,6 +3081,29 @@ static void cat_exec(char *line)
     else if (line[0] == 'R' && line[1] == 'X')
     {
         radio_tx_off();
+    }
+    else if (line[0] == 'K' && line[1] == 'Y')
+    {
+        if (line[2] == 0)
+        {
+            snprintf(reply, sizeof(reply), "KY%s;\r\n", cw_get_message());
+            cat_puts(reply);
+        }
+        else
+        {
+            /* Real Kenwood's KY genuinely means "send this now", not just
+               "remember this for later" - matched here since it's exactly
+               what's needed: sets the message AND triggers a one-shot
+               send, auto-returning to RX when done (unlike the looping
+               beacon a bare TX; still sends, unchanged). radio_tx_on()
+               is safe to call again mid-session - cw_tx_restart() resets
+               cleanly every time, so re-sending KY while a previous one
+               is still going just restarts fresh with the new text. */
+            cw_set_message(&line[2]);
+            cw_msg_oneshot = 1;
+            cw_msg_wrapped = 0;
+            radio_tx_on();
+        }
     }
     else if (line[0] == 'I' && line[1] == 'F')
     {
