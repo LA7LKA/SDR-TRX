@@ -15,6 +15,14 @@ firmware/GNURadio/**/__pycache__/
 # LibreOffice lock file for open documents
 .~lock.*#
 
+# KiCad editor lock files, its plugin-based local version history (a
+# nested git repo of its own), and its auto-generated timestamped project
+# backups - git already versions the project files, so none of this is ours
+# to track
+~*.lck
+**/.history/
+**/*-backups/
+
 # Full upstream Hamlib checkout (CAT backend dev/test) - not ours to track
 Hamlib/
 
