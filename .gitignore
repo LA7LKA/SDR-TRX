@@ -8,8 +8,9 @@ firmware/codec2/build/
 firmware/GNURadio/**/*.py
 firmware/GNURadio/**/__pycache__/
 
-# Editor config with a machine-local absolute path
+# Editor/tool config with a machine-local absolute path
 .vscode/
+.claude/
 
 # LibreOffice lock file for open documents
 .~lock.*#
