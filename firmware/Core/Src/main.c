@@ -824,12 +824,38 @@ void ssb_process_block(const uint16_t *in, uint16_t *out, int n)
         // after the up-conversion, confirmed against an FT-857D)
         for (int i = 0; i < n; i++)
             audio_buf[i] = I_buf[i] - Q_buf[i];
+
+        /* Post-demod level, same pattern as the CW branch below - this is
+           what the HMI's S-meter reads (hmi.c), so it needs to reflect the
+           tuned signal, not just the raw pre-mix ADC swing. */
+        float peak = 0.0f, sumsq = 0.0f;
+        for (int i = 0; i < n; i++)
+        {
+            float a = fabsf(audio_buf[i]);
+            if (a > peak) peak = a;
+            sumsq += audio_buf[i] * audio_buf[i];
+        }
+        rx_peak = peak;
+        rx_rms  = sqrtf(sumsq / (float)n);
+        rx_blocks++;
     }
     else if (MODE == MODE_LSB)
     {
         // LSB = I + Q
         for (int i = 0; i < n; i++)
             audio_buf[i] = I_buf[i] + Q_buf[i];
+
+        /* Same reasoning as MODE_USB above. */
+        float peak = 0.0f, sumsq = 0.0f;
+        for (int i = 0; i < n; i++)
+        {
+            float a = fabsf(audio_buf[i]);
+            if (a > peak) peak = a;
+            sumsq += audio_buf[i] * audio_buf[i];
+        }
+        rx_peak = peak;
+        rx_rms  = sqrtf(sumsq / (float)n);
+        rx_blocks++;
     }
     else if (MODE == MODE_CW)
     {
@@ -864,7 +890,7 @@ void ssb_process_block(const uint16_t *in, uint16_t *out, int n)
                                  || MODE == MODE_FREEDV_700E)
     {
         // FreeDV rides on an ordinary SSB signal, so demodulate as USB first.
-        float peak = 0.0f;
+        float peak = 0.0f, sumsq = 0.0f;
 
         for (int i = 0; i < n; i++)
         {
@@ -872,9 +898,11 @@ void ssb_process_block(const uint16_t *in, uint16_t *out, int n)
 
             float a = fabsf(audio_buf[i]);
             if (a > peak) peak = a;
+            sumsq += audio_buf[i] * audio_buf[i];
         }
 
         rx_peak = peak;
+        rx_rms  = sqrtf(sumsq / (float)n);
         rx_blocks++;
 
         // Keep the plain-SSB audio so we can fall back to it below - this is
@@ -1005,6 +1033,22 @@ void nbfm_process_block(const uint16_t *in, uint16_t *out, int n)
     // 8) Audio LPF etter FM-demod
     // -----------------------------
     arm_fir_f32(&audio_lpf, audio_fm, audio_lpf_out, n);
+
+    // Post-demod level for the HMI's S-meter (hmi.c) - same reasoning as
+    // ssb_process_block()/freedv2400b_process_block(), this was the one RX
+    // mode still missing it.
+    {
+        float peak = 0.0f, sumsq = 0.0f;
+        for (int i = 0; i < n; i++)
+        {
+            float a = fabsf(audio_lpf_out[i]);
+            if (a > peak) peak = a;
+            sumsq += audio_lpf_out[i] * audio_lpf_out[i];
+        }
+        rx_peak = peak;
+        rx_rms  = sqrtf(sumsq / (float)n);
+        rx_blocks++;
+    }
 
     // -----------------------------
     // 9) Gain + DAC-skalering

@@ -153,7 +153,7 @@ blocks:
     affinity: ''
     alias: ''
     comment: ''
-    device_name: plughw:CARD=Generic,DEV=0
+    device_name: plughw:CARD=Generic_1,DEV=0
     num_inputs: '1'
     ok_to_block: 'True'
     samp_rate: samp_rate
@@ -204,7 +204,7 @@ blocks:
     affinity: ''
     alias: ''
     comment: ''
-    device_name: plughw:CARD=Generic,DEV=0
+    device_name: plughw:CARD=Generic_1,DEV=0
     maxoutbuf: '0'
     minoutbuf: '0'
     num_outputs: '1'

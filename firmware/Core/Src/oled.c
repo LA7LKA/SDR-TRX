@@ -108,6 +108,7 @@ static const glyph_t font[] = {
     { 'W', {0x7F, 0x20, 0x18, 0x20, 0x7F} },
     { ':', {0x00, 0x00, 0x12, 0x00, 0x00} },
     { '-', {0x08, 0x08, 0x08, 0x08, 0x08} },
+    { '+', {0x08, 0x08, 0x3E, 0x08, 0x08} },
 };
 #define FONT_N (sizeof(font) / sizeof(font[0]))
 
@@ -146,6 +147,51 @@ void oled_draw_text(uint8_t col, uint8_t page, const char *s)
         if (g)
             memcpy(&framebuf[page * OLED_WIDTH + col], g, 5);
         col += 6;   /* 5 px glyph + 1 px spacing */
+        s++;
+    }
+}
+
+/* Doubles a glyph column's bottom/top nibble into a full 8-bit page column,
+   each source pixel becoming a 2x2 block - the mechanism behind
+   oled_draw_text_2x() below. Reuses the existing 5x7 font bitmaps rather
+   than needing a second, hand-authored large font. */
+static uint8_t expand_nibble(uint8_t g, int hi)
+{
+    uint8_t out = 0;
+    for (int b = 0; b < 4; b++)
+        if (g & (1u << (b + (hi ? 4 : 0))))
+            out |= (uint8_t)(3u << (b * 2));
+    return out;
+}
+
+/*
+ * Same font as oled_draw_text(), rendered at 2x scale (10px wide, 16px/2
+ * pages tall) for the one glanceable "big number" line the frequency
+ * readout needs. page is the TOP of the two pages the glyph spans.
+ */
+void oled_draw_text_2x(uint8_t col, uint8_t page, const char *s)
+{
+    if (page + 1 >= OLED_PAGES)
+        return;
+
+    while (*s && col + 10 <= OLED_WIDTH)
+    {
+        const uint8_t *g = glyph_for(*s);
+        if (g)
+        {
+            for (int i = 0; i < 5; i++)
+            {
+                uint8_t top = expand_nibble(g[i], 0);
+                uint8_t bot = expand_nibble(g[i], 1);
+                uint8_t dcol = (uint8_t)(col + i * 2);
+
+                framebuf[page * OLED_WIDTH + dcol]           = top;
+                framebuf[page * OLED_WIDTH + dcol + 1]       = top;
+                framebuf[(page + 1) * OLED_WIDTH + dcol]     = bot;
+                framebuf[(page + 1) * OLED_WIDTH + dcol + 1] = bot;
+            }
+        }
+        col += 11;   /* 10 px glyph + 1 px spacing */
         s++;
     }
 }

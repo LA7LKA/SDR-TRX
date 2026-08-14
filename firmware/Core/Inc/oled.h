@@ -16,6 +16,10 @@ void oled_clear(void);
    wide plus 1 px spacing, so page text wraps at column 128 silently. */
 void oled_draw_text(uint8_t col, uint8_t page, const char *s);
 
+/* Same font at 2x scale (10 px wide, spans page and page+1). For the one
+   glanceable "big number" line - not a general-purpose large font. */
+void oled_draw_text_2x(uint8_t col, uint8_t page, const char *s);
+
 void oled_display(void);
 
 #endif

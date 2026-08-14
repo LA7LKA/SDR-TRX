@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
+#include <math.h>
 
 /*
  * Owned by main.c - the existing radio state/API this module drives.
@@ -17,6 +18,14 @@ extern int   MODE;
 extern float mic_gain;
 extern float cw_pitch_hz;
 extern volatile int tx_active;
+/* 0.0-1.0 full-scale RMS, computed AFTER tuning/demod (main.c's per-mode
+   RX branches) - see format_smeter() below. Deliberately not rx_adc_peak:
+   that one is measured before the NCO mix, on the raw broadband IF, so it
+   doesn't track whatever's actually tuned in - it read a near-constant
+   value regardless of signal, which is exactly the bug this replaced.
+   rx_rms now covers every mode (main.c was missing it for USB/LSB/FreeDV
+   until this fix, added the same day). */
+extern volatile float rx_rms;
 int  mode_count(void);
 const char *mode_name(int mode);
 void radio_set_mode(int mode);
@@ -95,41 +104,113 @@ static int      split_active = 0;
 static int      tune_active  = 0;       /* display only - doesn't key a real carrier yet */
 static int      locked       = 0;
 
-static void redraw(void)
+/* "14200000" -> "14.200.000" - thousands-grouped, for the two frequency
+   lines. Groups from the right; the leftmost group is whatever's left over
+   (1-3 digits), same convention as normal thousands separators. */
+static void format_freq_grouped(char *buf, size_t bufsz, uint32_t hz)
 {
-    char l0[24], l1[24], l2[24], l3[40];
+    char digits[12];
+    int  n = snprintf(digits, sizeof(digits), "%lu", (unsigned long)hz);
+    int  first_group = n % 3;
+    if (first_group == 0) first_group = 3;
 
-    snprintf(l0, sizeof(l0), "%s %s", mode_name(MODE), filt_name[filt_idx]);
-    snprintf(l1, sizeof(l1), "%sM F:%luHZ", band_name[band_idx], (unsigned long)vfo_freq_hz);
+    char *out = buf;
+    char *end = buf + bufsz - 1;
+    int   copied = 0;
 
-    switch (focus)
+    while (copied < n && out < end)
     {
-    case FOCUS_FREQ:    snprintf(l2, sizeof(l2), "STEP:%luHZ", (unsigned long)step_table[step_idx]); break;
-    case FOCUS_VOLUME:  snprintf(l2, sizeof(l2), "VOL:%d", volume); break;
-    case FOCUS_MIC:     snprintf(l2, sizeof(l2), "MIC:%d", (int)mic_gain); break;
-    case FOCUS_CWPITCH: snprintf(l2, sizeof(l2), "PITCH:%dHZ", (int)cw_pitch_hz); break;
-    case FOCUS_KEYTYPE: snprintf(l2, sizeof(l2), "KEY:%s", cw_keyer_type_name()); break;
-    case FOCUS_POWER:   snprintf(l2, sizeof(l2), "PWR:%d", tx_power_pct); break;
-    case FOCUS_RIT:     snprintf(l2, sizeof(l2), "RIT:%ldHZ", (long)rit_offset_hz); break;
-    default:            l2[0] = 0; break;
+        int group_len = (copied == 0) ? first_group : 3;
+        while (group_len-- > 0 && copied < n && out < end)
+            *out++ = digits[copied++];
+        if (copied < n && out < end)
+            *out++ = '.';
+    }
+    *out = 0;
+}
+
+/* Uncalibrated relative S-meter, estimated straight off the post-demod RX
+   RMS (rx_rms, 0.0-1.0 full-scale) - there's no real RF front end/AGC
+   hardware yet to calibrate a proper S-unit-per-uV reading against (see
+   rf-hardware-chain notes), so this is a placeholder: -20 dBFS pinned to
+   S9, 6 dB/S-unit below that (the standard, if not perfectly universal,
+   ham convention), "+NN DB" appended once past S9. No damping/hold yet,
+   so it'll move as fast as the underlying audio does - worth adding a
+   decay filter later if it reads too jumpy on real hardware. Revisit
+   properly once real RF AGC/S-meter hardware exists. */
+static void format_smeter(char *buf, size_t bufsz)
+{
+    float level = rx_rms;
+    if (level < 0.00003f) level = 0.00003f;   /* -90 dBFS floor, avoid log(0) */
+    float dbfs = 20.0f * log10f(level);
+
+    int s_unit, over_db = 0;
+    if (dbfs >= -20.0f)
+    {
+        s_unit = 9;
+        over_db = (int)(dbfs + 20.0f);
+        if (over_db < 0) over_db = 0;
+    }
+    else
+    {
+        s_unit = 9 - (int)((-20.0f - dbfs) / 6.0f);
+        if (s_unit < 1) s_unit = 1;
+        if (s_unit > 9) s_unit = 9;
     }
 
-    /* RX/TX and the audio source are always shown, not just as flags that
-       appear/vanish - Oystein specifically wants both legible on this line
-       at a glance, not inferred from absence of other flags. */
-    l3[0] = 0;
-    if (locked)       strcat(l3, "LOCK ");
-    if (rit_active)   strcat(l3, "RIT ");
-    if (split_active) strcat(l3, "SPLIT ");
-    if (tune_active)  strcat(l3, "TUNE ");
-    strcat(l3, tx_active ? "TX " : "RX ");
-    strcat(l3, audio_source_is_usb() ? "AUDIO:USB" : "AUDIO:ANLG");
+    char bars[10];
+    int  i;
+    for (i = 0; i < s_unit && i < 9; i++) bars[i] = '-';
+    bars[i] = 0;
+
+    if (over_db > 0) snprintf(buf, bufsz, "S%d %s+%dDB", s_unit, bars, over_db);
+    else             snprintf(buf, bufsz, "S%d %s", s_unit, bars);
+}
+
+static void redraw(void)
+{
+    char l_smeter[24], l_freq_sm[24], l_freq_big[16], l_audio_fn[32], l_mode[24], l_flags[40];
+    char freq_grp[16];
+
+    format_smeter(l_smeter, sizeof(l_smeter));
+
+    format_freq_grouped(freq_grp, sizeof(freq_grp), vfo_freq_hz);
+    snprintf(l_freq_sm, sizeof(l_freq_sm), "%s F:%sHZ", tx_active ? "TX" : "RX", freq_grp);
+    snprintf(l_freq_big, sizeof(l_freq_big), "%s", freq_grp);
+
+    char fn_val[16];
+    switch (focus)
+    {
+    case FOCUS_FREQ:    snprintf(fn_val, sizeof(fn_val), "STEP %luHZ", (unsigned long)step_table[step_idx]); break;
+    case FOCUS_VOLUME:  snprintf(fn_val, sizeof(fn_val), "VOL %d", volume); break;
+    case FOCUS_MIC:     snprintf(fn_val, sizeof(fn_val), "MIC %d", (int)mic_gain); break;
+    case FOCUS_CWPITCH: snprintf(fn_val, sizeof(fn_val), "PITCH %dHZ", (int)cw_pitch_hz); break;
+    case FOCUS_KEYTYPE: snprintf(fn_val, sizeof(fn_val), "KEY %s", cw_keyer_type_name()); break;
+    case FOCUS_POWER:   snprintf(fn_val, sizeof(fn_val), "PWR %d", tx_power_pct); break;
+    case FOCUS_RIT:     snprintf(fn_val, sizeof(fn_val), "RIT %ldHZ", (long)rit_offset_hz); break;
+    default:            fn_val[0] = 0; break;
+    }
+    snprintf(l_audio_fn, sizeof(l_audio_fn), "A:%s FN:%s",
+             audio_source_is_usb() ? "USB" : "ANLG", fn_val);
+
+    snprintf(l_mode, sizeof(l_mode), "M:%s %s", mode_name(MODE), filt_name[filt_idx]);
+
+    /* Band name has nowhere else to live now that the old band/freq line is
+       gone (freq lines above show frequency only) - keep it visible here,
+       always shown, same as before; the other flags stay conditional. */
+    snprintf(l_flags, sizeof(l_flags), "%sM ", band_name[band_idx]);
+    if (locked)       strcat(l_flags, "LOCK ");
+    if (rit_active)   strcat(l_flags, "RIT ");
+    if (split_active) strcat(l_flags, "SPLIT ");
+    if (tune_active)  strcat(l_flags, "TUNE ");
 
     oled_clear();
-    oled_draw_text(0, 0, l0);
-    oled_draw_text(0, 2, l1);
-    oled_draw_text(0, 4, l2);
-    oled_draw_text(0, 6, l3);
+    oled_draw_text(0, 0, l_smeter);
+    oled_draw_text(0, 1, l_freq_sm);
+    oled_draw_text_2x(0, 2, l_freq_big);
+    oled_draw_text(0, 4, l_audio_fn);
+    oled_draw_text(0, 5, l_mode);
+    oled_draw_text(0, 6, l_flags);
     oled_display();
 }
 
@@ -198,6 +279,22 @@ void hmi_poll(void)
     }
 
     int changed = 0;
+
+    /* S-meter (and anything else continuously live, not just discrete
+       button/encoder edges) needs its own periodic redraw trigger -
+       without this, redraw() only ever fires on a UI event, so the meter
+       just shows whatever rx_rms happened to be at the last button press
+       or mode change and sits frozen between them. 200 ms (5 Hz) is fine
+       for a meter - no need to push I2C traffic at the encoder's 20 Hz cap
+       for something nobody needs video-rate updates on. */
+    {
+        static uint32_t meter_tick = 0;
+        if ((now_tick - meter_tick) >= 200)
+        {
+            meter_tick = now_tick;
+            changed = 1;
+        }
+    }
 
     /* tx_active and audio_source can also change from outside this module
        (the UART console's "tx"/"rx"/"src" commands) - without this check
