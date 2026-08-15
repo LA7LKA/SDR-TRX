@@ -1,5 +1,7 @@
 # Build output
 firmware/build/
+firmware-h7/QRP-SDR-TRX/Makefile/CM7/build/
+firmware-h7/QRP-SDR-TRX/Makefile/CM4/build/
 
 # codec2 is a submodule; its own build tree is not ours to track
 firmware/codec2/build/

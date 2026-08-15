@@ -1,0 +1,113 @@
+#ifndef FREEDV_CHAIN_H
+#define FREEDV_CHAIN_H
+
+#include <stdint.h>
+
+/*
+ * FreeDV 1600 receive chain.
+ *
+ * Sits behind the existing SSB demodulator: FreeDV is transmitted as an
+ * ordinary SSB signal, so the audio coming out of ssb_process_block() is
+ * already the modem passband signal. This module resamples that 48 kHz audio
+ * down to the 8 kHz FreeDV expects, runs the demodulator, and hands back
+ * decoded speech at 8 kHz.
+ *
+ * Rate handling is decoupled on both ends:
+ *   - the 48 kHz side may push any block length (1024 is not a multiple of 6)
+ *   - freedv_rx() consumes a varying number of samples per call (clock
+ *     tracking), so input is buffered until freedv_nin() is satisfied
+ *
+ * 1600, 700D and 700E are HF modes carried on SSB and their modems run at
+ * 8 kHz, so
+ * the input is decimated 48k -> 8k. 2400B is designed to pass through a
+ * commodity FM radio's audio path and its modem runs at 48 kHz natively, so
+ * its input goes straight through. Both decode speech at
+ * 8 kHz, so playback is interpolated back up either way.
+ *
+ * Returns 0 on success, -1 if codec2 failed to allocate.
+ */
+#define FREEDV_CHAIN_MODE_1600   0
+#define FREEDV_CHAIN_MODE_2400B  1
+#define FREEDV_CHAIN_MODE_700D   2
+#define FREEDV_CHAIN_MODE_700E   3
+
+int freedv_chain_init(int chain_mode);
+
+/* Feed normalised (+-1.0) SSB audio at 48 kHz. */
+void freedv_chain_put_audio48(const float *audio48, int n);
+
+/*
+ * Pull decoded speech at 8 kHz. Returns the number of samples written,
+ * which is 0 until the modem has synced and produced a frame.
+ */
+int freedv_chain_get_speech8(int16_t *speech_out, int max);
+
+/*
+ * Pull decoded speech interpolated back up to 48 kHz, normalised to +-1.0 so
+ * it drops straight into the existing audio gain and DAC stage.
+ *
+ * Always writes exactly n samples. Anything not covered by decoded speech
+ * (no sync yet, or waiting on the next frame) is written as silence, so the
+ * DAC never runs on stale data. The return value is the number of real
+ * samples written, which is useful for spotting underruns.
+ */
+int freedv_chain_get_speech48(float *audio48, int n);
+
+/*
+ * Drop everything buffered and make the modem re-acquire. Call on a mode
+ * change: the resamplers and FIFOs would otherwise carry audio from the old
+ * mode, at the old block size, into the new stream.
+ */
+void freedv_chain_reset(void);
+
+/* ---- transmit ---------------------------------------------------------
+ *
+ * Mirrors the receive side. Speech goes in at 48 kHz and is decimated to the
+ * 8 kHz codec2 wants; modem samples come back out at 48 kHz, interpolated for
+ * the modes whose modem runs at 8 kHz and passed straight through for 2400B,
+ * whose modem is already at 48 kHz.
+ *
+ * What comes out is the signal to modulate, not audio: for 1600, 700D and 700E
+ * it is fed to the SSB modulator, for 2400B to the FM one.
+ */
+
+/* Switch direction. Flushes everything buffered, so call on PTT either way. */
+void freedv_chain_set_tx(int tx);
+
+/* Feed normalised (+-1.0) microphone audio at 48 kHz (decimate only). */
+void freedv_chain_put_speech48(const float *audio48, int n);
+
+/* Encode one ready frame. Runs the heavy encode; call from the main loop. */
+void freedv_chain_encode(void);
+
+/* Modem samples ready to pull at 48 kHz, for pacing the DAC fill. */
+int freedv_chain_modem_avail48(void);
+
+/*
+ * Pull modem samples at 48 kHz. Always writes n samples; anything not yet
+ * produced is written as silence, and the return value is how many were real.
+ */
+int freedv_chain_get_modem48(float *out48, int n);
+
+/* Non-zero once the modem has acquired sync. */
+int freedv_chain_synced(void);
+
+/* Signal quality in dB, valid while synced. */
+float freedv_chain_snr(void);
+
+/* Count of times the RX playback jitter buffer ran dry and had to rebuild
+   its prefill cushion (freedv_chain_get_speech48()) - each occurrence mutes
+   output until enough speech has banked back up again. */
+unsigned freedv_chain_underruns(void);
+
+/* min/max/avg of freedv_nin()'s return value since freedv_chain_init() -
+   diagnostic for whether the modem's timing tracker is jittering
+   symmetrically (normal) or is systematically biased one way (would mean
+   a real ADC/DAC sample-rate mismatch, not just tracker noise). */
+void freedv_chain_nin_stats(int32_t *min, int32_t *max, int32_t *avg);
+
+/* Count of times 2400B's put_audio48() path found in_fifo too full to
+   accept an incoming chunk - those samples were silently dropped. */
+unsigned freedv_chain_in_drops(void);
+
+#endif /* FREEDV_CHAIN_H */
