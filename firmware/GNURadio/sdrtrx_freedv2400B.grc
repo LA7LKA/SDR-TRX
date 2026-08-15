@@ -136,7 +136,7 @@ blocks:
     affinity: ''
     alias: ''
     comment: ''
-    device_name: plughw:CARD=Generic,DEV=0
+    device_name: plughw:CARD=Generic_1,DEV=0
     num_inputs: '1'
     ok_to_block: 'True'
     samp_rate: samp_rate
@@ -144,7 +144,7 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [1232, 432.0]
+    coordinate: [1160, 344.0]
     rotation: 0
     state: enabled
 - name: audio_sink_0_0
@@ -180,7 +180,7 @@ blocks:
     bus_structure: null
     coordinate: [1216, 104.0]
     rotation: 0
-    state: enabled
+    state: disabled
 - name: audio_sink_0_0_1
   id: audio_sink
   parameters:
@@ -197,7 +197,7 @@ blocks:
     bus_structure: null
     coordinate: [1216, 16.0]
     rotation: 0
-    state: enabled
+    state: disabled
 - name: audio_source_0
   id: audio_source
   parameters:
@@ -223,7 +223,7 @@ blocks:
     affinity: ''
     alias: ''
     comment: ''
-    device_name: plughw:CARD=Generic,DEV=0
+    device_name: plughw:CARD=Generic_1,DEV=0
     maxoutbuf: '0'
     minoutbuf: '0'
     num_outputs: '1'
@@ -254,7 +254,7 @@ blocks:
     bus_structure: null
     coordinate: [976, 16.0]
     rotation: 0
-    state: enabled
+    state: disabled
 - name: audio_source_0_1_0
   id: audio_source
   parameters:
@@ -273,7 +273,7 @@ blocks:
     bus_structure: null
     coordinate: [976, 104.0]
     rotation: 0
-    state: enabled
+    state: disabled
 - name: blocks_complex_to_real_0
   id: blocks_complex_to_real
   parameters:
@@ -287,7 +287,7 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [984, 360.0]
+    coordinate: [848, 360.0]
     rotation: 0
     state: enabled
 - name: blocks_file_source_0
@@ -346,24 +346,6 @@ blocks:
     coordinate: [504, 816.0]
     rotation: 0
     state: enabled
-- name: blocks_multiply_const_vxx_0
-  id: blocks_multiply_const_vxx
-  parameters:
-    affinity: ''
-    alias: ''
-    comment: ''
-    const: '1'
-    maxoutbuf: '0'
-    minoutbuf: '0'
-    type: complex
-    vlen: '1'
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate: [832, 352.0]
-    rotation: 0
-    state: enabled
 - name: blocks_multiply_const_vxx_0_0
   id: blocks_multiply_const_vxx
   parameters:
@@ -397,7 +379,7 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [1168, 352.0]
+    coordinate: [1000, 352.0]
     rotation: 0
     state: enabled
 - name: blocks_multiply_xx_0
@@ -605,10 +587,9 @@ connections:
 - [blocks_file_source_0, '0', rational_resampler_xxx_0_0, '0']
 - [blocks_float_to_short_0, '0', vocoder_freedv_tx_ss_0, '0']
 - [blocks_float_to_short_0_0, '0', vocoder_freedv_rx_ss_0, '0']
-- [blocks_multiply_const_vxx_0, '0', blocks_complex_to_real_0, '0']
 - [blocks_multiply_const_vxx_0_0, '0', blocks_float_to_short_0_0, '0']
 - [blocks_multiply_const_vxx_0_0_0, '0', audio_sink_0, '0']
-- [blocks_multiply_xx_0, '0', blocks_multiply_const_vxx_0, '0']
+- [blocks_multiply_xx_0, '0', blocks_complex_to_real_0, '0']
 - [blocks_multiply_xx_0_0, '0', low_pass_filter_0, '0']
 - [blocks_short_to_float_0, '0', analog_nbfm_tx_0, '0']
 - [blocks_short_to_float_0_0, '0', rational_resampler_xxx_0_1, '0']

@@ -91,13 +91,36 @@ blocks:
     coordinate: [184, 592.0]
     rotation: 0
     state: enabled
+- name: analog_sig_source_x_0_1
+  id: analog_sig_source_x
+  parameters:
+    affinity: ''
+    alias: ''
+    amp: '1'
+    comment: ''
+    freq: '1000'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    offset: '0'
+    phase: '0'
+    samp_rate: samp_rate
+    showports: 'False'
+    type: float
+    waveform: analog.GR_SIN_WAVE
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [24, 488.0]
+    rotation: 0
+    state: disabled
 - name: audio_sink_0
   id: audio_sink
   parameters:
     affinity: ''
     alias: ''
     comment: ''
-    device_name: plughw:CARD=Generic,DEV=0
+    device_name: plughw:CARD=Generic_1,DEV=0
     num_inputs: '1'
     ok_to_block: 'True'
     samp_rate: samp_rate
@@ -177,14 +200,14 @@ blocks:
     bus_structure: null
     coordinate: [8, 416.0]
     rotation: 0
-    state: enabled
+    state: disabled
 - name: audio_source_0_0
   id: audio_source
   parameters:
     affinity: ''
     alias: ''
     comment: ''
-    device_name: plughw:CARD=Generic,DEV=0
+    device_name: plughw:CARD=Generic_1,DEV=0
     maxoutbuf: '0'
     minoutbuf: '0'
     num_outputs: '1'
@@ -313,7 +336,7 @@ blocks:
     bus_structure: null
     coordinate: [0, 248.0]
     rotation: 0
-    state: disabled
+    state: enabled
 - name: blocks_float_to_short_0
   id: blocks_float_to_short
   parameters:
@@ -595,6 +618,7 @@ blocks:
 connections:
 - [analog_sig_source_x_0, '0', blocks_multiply_xx_0, '1']
 - [analog_sig_source_x_0_0, '0', blocks_multiply_xx_0_0, '0']
+- [analog_sig_source_x_0_1, '0', rational_resampler_xxx_0_0, '0']
 - [audio_source_0, '0', rational_resampler_xxx_0_0, '0']
 - [audio_source_0_0, '0', hilbert_fc_0_0, '0']
 - [audio_source_0_1, '0', audio_sink_0_0_1, '0']
