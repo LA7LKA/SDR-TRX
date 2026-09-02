@@ -106,13 +106,7 @@
   *        (when HSE is used as system clock source, directly or through the PLL).
   */
 #if !defined  (HSE_VALUE)
-/* Board's actual HSE source is the ST-LINK's 8 MHz MCO (UM2408 sec 7.9.1,
-   bypass mode - see SystemClock_Config() in main.c) - not the 25 MHz X2
-   crystal path this CubeMX default assumed. HAL's own frequency
-   calculations (e.g. UART_SetConfig()'s baud divisor) read this constant
-   directly, so leaving it wrong here left those calculations silently
-   incorrect even after the real PLL/prescaler registers were fixed. */
-#define HSE_VALUE    (8000000UL) /*!< Value of the External oscillator in Hz */
+#define HSE_VALUE    (25000000UL) /*!< Value of the External oscillator in Hz : FPGA case fixed to 60MHZ */
 #endif /* HSE_VALUE */
 
 #if !defined  (HSE_STARTUP_TIMEOUT)

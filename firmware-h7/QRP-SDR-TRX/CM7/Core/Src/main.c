@@ -101,6 +101,7 @@ DMA_HandleTypeDef hdma_dac1_ch2;
 
 OPAMP_HandleTypeDef hopamp1;
 
+TIM_HandleTypeDef htim2;
 TIM_HandleTypeDef htim6;
 
 /* USER CODE BEGIN PV */
@@ -343,6 +344,7 @@ static void MX_TIM6_Init(void);
 static void MX_ADC1_Init(void);
 static void MX_ADC2_Init(void);
 static void MX_OPAMP1_Init(void);
+static void MX_TIM2_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -456,6 +458,7 @@ Error_Handler();
   MX_ADC2_Init();
   MX_OPAMP1_Init();
   MX_USB_DEVICE_Init();
+  MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
 
   /* Moved here from before HAL_Init() (this port's first attempt) - that
@@ -518,7 +521,7 @@ Error_Handler();
 
   radio_apply_mode(MODE);
 
-  HAL_TIM_Base_Start(&htim6);
+  HAL_TIM_Base_Start(&htim2);
 
   cw_paddle_gpio_init();
 
@@ -746,14 +749,7 @@ void SystemClock_Config(void)
 
   /** Supply configuration update enable
   */
-  /* This board's default hardware strapping is "Internal SMPS only"
-     (UM2408 Table 10), not LDO. Requesting LDO here while ST-LINK/board
-     hardware has no LDO connected left SystemClock_Config()'s VOSRDY wait
-     spinning forever (unbounded, no timeout) - UM2408 sec 7.4.8 documents
-     this exact mismatch and its exact symptom: "after the reset, STLINK
-     cannot connect to the target anymore." That's the SWD lockup chased
-     all session, not a firmware/debug-port bug. */
-  HAL_PWREx_ConfigSupply(PWR_DIRECT_SMPS_SUPPLY);
+  HAL_PWREx_ConfigSupply(PWR_LDO_SUPPLY);
 
   /** Configure the main internal regulator output voltage
   */
@@ -764,97 +760,21 @@ void SystemClock_Config(void)
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
-  /* Running on HSI (the H7's internal 64 MHz RC oscillator), not HSE.
-     This board's HSE defaults to the ST-LINK's 8 MHz MCO output fed into
-     OSC_IN (UM2408 sec 7.9.1, SB72 ON/SB71 OFF) rather than the onboard
-     X2 crystal (25 MHz, needs a manual solder-bridge rework: SB3/SB4 ON,
-     SB72 OFF, C74/C76 populated - not yet done). That MCO path measured
-     badly: audible pitch drift on USB/LSB, and on FreeDV a freedv_nin()
-     average that climbed continuously rather than settling - a debug
-     probe's buffered, off-board clock output picking up switching noise/
-     jitter, not just a raw-accuracy problem HSI's tighter tolerance would
-     also have. Switching to HSI (still not the crystal, but on-die and
-     free of that noise) measurably fixed it: 1600's SNR went from
-     2-6dB to 7-10dB, FreeDV 700D held sync continuously instead of
-     flickering, and freedv_nin()'s average locked flat at the nominal
-     1280 instead of drifting. HSI's own absolute frequency accuracy is
-     looser than a crystal's, but that doesn't matter here - the demod
-     tracks slow frequency offset out; it's jitter that was hurting.
-     Worth comparing against the X2 crystal once the rework is possible,
-     but HSI is a real fix over the previous HSE(MCO) config, not a
-     placeholder. PLLM/PLLN (and PLL2M/PLL2N in PeriphCommonClock_Config()
-     below) are chosen so refclk/VCO and every downstream frequency
-     (480 MHz SYSCLK, 76 MHz ADC clock, 48 kHz TIM6/audio rate) land
-     exactly where the HSE(MCO) config had them - see the ratios: 64 MHz/
-     16 = 4 MHz = 8 MHz/2, the same refclk the old PLLM=2 landed on. */
-  /* HSE first (see HSE_SRC_KHZ below), HSI as fallback.
-     Board reality, measured 2026-08-15: SB72 is ON from the factory, so
-     the ST-LINK's 8 MHz MCO reaches OSC_IN. RCC_HSE_ON therefore comes
-     ready even with no crystal fitted - HSERDY=1 was confirmed on the
-     register - so the fallback below only catches "HSE truly absent", not
-     "HSE is a different frequency than assumed". Getting that wrong is
-     silent and nasty: 25 MHz dividers against the real 8 MHz gave a
-     1.6 MHz PLL ref (below the 4-8 MHz VCIRANGE_2 window), 307 MHz VCO
-     and 153.6 MHz SYSCLK instead of 480, which just looks like a dead
-     console because every baud rate is 3.1x off. So the input frequency
-     is a build-time decision, not something to auto-detect.
-
-     HSE_ON rather than HSE_BYPASS is deliberate even though the source is
-     a driven clock: F746 ran exactly this way (HSE_ON, 8 MHz MCO) and its
-     FreeDV worked, whereas this port's original HSE_BYPASS was jittery
-     enough to hurt the demodulators. BYPASS routes the pin straight into
-     the clock tree; HSE_ON runs it through the crystal oscillator
-     amplifier, which appears to clean it up. */
-
-#if HSE_SRC_KHZ != 0
   RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
   RCC_OscInitStruct.HSEState = RCC_HSE_ON;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
   RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
-#if HSE_SRC_KHZ == 25000
-  RCC_OscInitStruct.PLL.PLLM = 5;     /* 25/5  = 5 MHz ref */
-  RCC_OscInitStruct.PLL.PLLN = 192;   /* x192  = 960 MHz VCO */
-#else
-  RCC_OscInitStruct.PLL.PLLM = 2;     /* 8/2   = 4 MHz ref */
-  RCC_OscInitStruct.PLL.PLLN = 240;   /* x240  = 960 MHz VCO */
-#endif
-  RCC_OscInitStruct.PLL.PLLP = 2;     /* -> 480 MHz SYSCLK either way */
+  RCC_OscInitStruct.PLL.PLLM = 8;
+  RCC_OscInitStruct.PLL.PLLN = 307;
+  RCC_OscInitStruct.PLL.PLLP = 2;
   RCC_OscInitStruct.PLL.PLLQ = 20;
   RCC_OscInitStruct.PLL.PLLR = 2;
-  RCC_OscInitStruct.PLL.PLLRGE = RCC_PLL1VCIRANGE_2;
+  RCC_OscInitStruct.PLL.PLLRGE = RCC_PLL1VCIRANGE_1;
   RCC_OscInitStruct.PLL.PLLVCOSEL = RCC_PLL1VCOWIDE;
   RCC_OscInitStruct.PLL.PLLFRACN = 0;
-
-  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) == HAL_OK)
+  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
   {
-    clock_src_hse = 1;
-  }
-  else
-#endif /* HSE_SRC_KHZ != 0 */
-  {
-    /* Nothing on OSC_IN at all. Internal RC: measured +3312 ppm static
-       offset and ~100 ppm RMS wander, audible as a wobble on an SSB tone,
-       but it boots and works. */
-    clock_src_hse = 0;
-
-    RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
-    RCC_OscInitStruct.HSIState = RCC_HSI_ON;
-    RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
-    RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
-    RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
-    RCC_OscInitStruct.PLL.PLLM = 16;
-    RCC_OscInitStruct.PLL.PLLN = 240;
-    RCC_OscInitStruct.PLL.PLLP = 2;
-    RCC_OscInitStruct.PLL.PLLQ = 20;
-    RCC_OscInitStruct.PLL.PLLR = 2;
-    RCC_OscInitStruct.PLL.PLLRGE = RCC_PLL1VCIRANGE_2;
-    RCC_OscInitStruct.PLL.PLLVCOSEL = RCC_PLL1VCOWIDE;
-    RCC_OscInitStruct.PLL.PLLFRACN = 0;
-
-    if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
-    {
-      Error_Handler();
-    }
+    Error_Handler();
   }
 
   /** Initializes the CPU, AHB and APB buses clocks
@@ -886,37 +806,13 @@ void PeriphCommonClock_Config(void)
 
   /** Initializes the peripherals clock
   */
-  /* PLL2M/PLL2N chosen to reproduce the same 8 MHz refclk and 152 MHz
-     VCO (-> 76 MHz ADC clock) the earlier 25 MHz and 8 MHz HSE configs
-     both landed on - see the HSI explanation in SystemClock_Config()
-     above for why this runs from HSI now (64 MHz/8 = 8 MHz, the same
-     refclk the old 8 MHz HSE/PLL2M=1 gave). This runs unconditionally on
-     every boot regardless of whether ADC is actually started. */
   PeriphClkInitStruct.PeriphClockSelection = RCC_PERIPHCLK_ADC;
-  /* PLLCKSELR.PLLSRC is shared by PLL1/2/3, so PLL2's input is whatever
-     SystemClock_Config() settled on. 25 MHz/2 = 12.5 MHz ref x12 = 150 MHz
-     VCO -> 75 MHz ADC on the crystal; 64 MHz/8 = 8 MHz ref x19 = 152 MHz
-     -> 76 MHz on HSI. Both are within the ADC's range and neither changes
-     the 48 kHz audio rate, which comes off TIM6 on the APB clocks. */
-  if (clock_src_hse)
-  {
-#if HSE_SRC_KHZ == 25000
-    PeriphClkInitStruct.PLL2.PLL2M = 2;    /* 25/2 = 12.5 MHz x12 = 150 -> 75 MHz ADC */
-    PeriphClkInitStruct.PLL2.PLL2N = 12;
-#else
-    PeriphClkInitStruct.PLL2.PLL2M = 1;    /* 8/1  = 8 MHz x19 = 152 -> 76 MHz ADC */
-    PeriphClkInitStruct.PLL2.PLL2N = 19;
-#endif
-  }
-  else
-  {
-    PeriphClkInitStruct.PLL2.PLL2M = 8;
-    PeriphClkInitStruct.PLL2.PLL2N = 19;
-  }
+  PeriphClkInitStruct.PLL2.PLL2M = 8;
+  PeriphClkInitStruct.PLL2.PLL2N = 48;
   PeriphClkInitStruct.PLL2.PLL2P = 2;
   PeriphClkInitStruct.PLL2.PLL2Q = 2;
   PeriphClkInitStruct.PLL2.PLL2R = 2;
-  PeriphClkInitStruct.PLL2.PLL2RGE = RCC_PLL2VCIRANGE_3;
+  PeriphClkInitStruct.PLL2.PLL2RGE = RCC_PLL2VCIRANGE_1;
   PeriphClkInitStruct.PLL2.PLL2VCOSEL = RCC_PLL2VCOMEDIUM;
   PeriphClkInitStruct.PLL2.PLL2FRACN = 0;
   PeriphClkInitStruct.AdcClockSelection = RCC_ADCCLKSOURCE_PLL2;
@@ -948,7 +844,7 @@ static void MX_ADC1_Init(void)
   /** Common config
   */
   hadc1.Instance = ADC1;
-  hadc1.Init.ClockPrescaler = ADC_CLOCK_ASYNC_DIV1;
+  hadc1.Init.ClockPrescaler = ADC_CLOCK_ASYNC_DIV2;
   hadc1.Init.Resolution = ADC_RESOLUTION_16B;
   hadc1.Init.ScanConvMode = ADC_SCAN_DISABLE;
   hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
@@ -956,15 +852,8 @@ static void MX_ADC1_Init(void)
   hadc1.Init.ContinuousConvMode = DISABLE;
   hadc1.Init.NbrOfConversion = 1;
   hadc1.Init.DiscontinuousConvMode = DISABLE;
-  hadc1.Init.ExternalTrigConv = ADC_EXTERNALTRIG_T6_TRGO;
+  hadc1.Init.ExternalTrigConv = ADC_EXTERNALTRIG_T2_TRGO;
   hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_RISING;
-  /* DMA_ONESHOT (CubeMX default) pairs with a non-circular DMA channel and
-     stops issuing conversion/DMA requests once the buffer fills once -
-     but hdma_adc1 is configured DMA_CIRCULAR (stm32h7xx_hal_msp.c), so
-     after that first pass the ADC just stopped feeding new samples while
-     DMA sat waiting for requests that never came again. DMA_CIRCULAR
-     matches the DMA channel and keeps conversions running continuously,
-     which is what a live audio RX stream needs. */
   hadc1.Init.ConversionDataManagement = ADC_CONVERSIONDATA_DMA_CIRCULAR;
   hadc1.Init.Overrun = ADC_OVR_DATA_PRESERVED;
   hadc1.Init.LeftBitShift = ADC_LEFTBITSHIFT_NONE;
@@ -985,14 +874,6 @@ static void MX_ADC1_Init(void)
 
   /** Configure Regular Channel
   */
-  /* ADC_CHANNEL_4 = OPAMP1_VOUT (PC4) - OPAMP1 in follower mode buffering
-     the RX IF signal from PB0/OPAMP1_VINP. Briefly bypassed to sample PA3
-     directly (ADC_CHANNEL_15) as a diagnostic for FreeDV 700D's marginal
-     SNR - that bypass didn't change 700D's SNR either way, and afterward
-     the RX S-meter/AGC started reading a stuck-high level even with zero
-     RF input (NBFM and 2400B both) - not something seen through OPAMP1
-     before the bypass. Reverted to OPAMP1/PC4 to test whether that's the
-     cause. */
   sConfig.Channel = ADC_CHANNEL_4;
   sConfig.Rank = ADC_REGULAR_RANK_1;
   sConfig.SamplingTime = ADC_SAMPLETIME_64CYCLES_5;
@@ -1031,7 +912,7 @@ static void MX_ADC2_Init(void)
   /** Common config
   */
   hadc2.Instance = ADC2;
-  hadc2.Init.ClockPrescaler = ADC_CLOCK_ASYNC_DIV1;
+  hadc2.Init.ClockPrescaler = ADC_CLOCK_ASYNC_DIV2;
   hadc2.Init.Resolution = ADC_RESOLUTION_16B;
   hadc2.Init.ScanConvMode = ADC_SCAN_DISABLE;
   hadc2.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
@@ -1039,9 +920,8 @@ static void MX_ADC2_Init(void)
   hadc2.Init.ContinuousConvMode = DISABLE;
   hadc2.Init.NbrOfConversion = 1;
   hadc2.Init.DiscontinuousConvMode = DISABLE;
-  hadc2.Init.ExternalTrigConv = ADC_EXTERNALTRIG_T6_TRGO;
+  hadc2.Init.ExternalTrigConv = ADC_EXTERNALTRIG_T2_TRGO;
   hadc2.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_RISING;
-  /* Same fix as hadc1 above - see that comment. */
   hadc2.Init.ConversionDataManagement = ADC_CONVERSIONDATA_DMA_CIRCULAR;
   hadc2.Init.Overrun = ADC_OVR_DATA_PRESERVED;
   hadc2.Init.LeftBitShift = ADC_LEFTBITSHIFT_NONE;
@@ -1100,7 +980,7 @@ static void MX_DAC1_Init(void)
   /** DAC channel OUT1 config
   */
   sConfig.DAC_SampleAndHold = DAC_SAMPLEANDHOLD_DISABLE;
-  sConfig.DAC_Trigger = DAC_TRIGGER_T6_TRGO;
+  sConfig.DAC_Trigger = DAC_TRIGGER_T2_TRGO;
   sConfig.DAC_OutputBuffer = DAC_OUTPUTBUFFER_ENABLE;
   sConfig.DAC_ConnectOnChipPeripheral = DAC_CHIPCONNECT_DISABLE;
   sConfig.DAC_UserTrimming = DAC_TRIMMING_FACTORY;
@@ -1148,6 +1028,54 @@ static void MX_OPAMP1_Init(void)
   /* USER CODE BEGIN OPAMP1_Init 2 */
 
   /* USER CODE END OPAMP1_Init 2 */
+
+}
+
+/**
+  * @brief TIM2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM2_Init(void)
+{
+
+  /* USER CODE BEGIN TIM2_Init 0 */
+
+  /* USER CODE END TIM2_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM2_Init 1 */
+
+  /* USER CODE END TIM2_Init 1 */
+  htim2.Instance = TIM2;
+  htim2.Init.Prescaler = 1;
+  htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim2.Init.Period = 1;
+  htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_ETRMODE2;
+  sClockSourceConfig.ClockPolarity = TIM_CLOCKPOLARITY_NONINVERTED;
+  sClockSourceConfig.ClockPrescaler = TIM_CLOCKPRESCALER_DIV1;
+  sClockSourceConfig.ClockFilter = 0;
+  if (HAL_TIM_ConfigClockSource(&htim2, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_UPDATE;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM2_Init 2 */
+
+  /* USER CODE END TIM2_Init 2 */
 
 }
 
@@ -1230,7 +1158,6 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOC_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
-  __HAL_RCC_GPIOD_CLK_ENABLE();
   __HAL_RCC_GPIOG_CLK_ENABLE();
 
   /*Configure GPIO pin : PC1 */
