@@ -81,6 +81,16 @@ typedef struct {
                                        silently dropped (not queued) */
     int32_t  clock_src_khz;        /* HSE input frequency actually in use,
                                        0 = fell back to the internal HSI */
+    float    freedv_foff_hz;       /* DIAGNOSTIC 2026-09-02, 2400B sync
+                                       investigation: estimated frequency
+                                       offset - large/inconsistent values
+                                       point at a mirrored/misplaced
+                                       spectrum rather than a quality
+                                       problem */
+    float    freedv_sync_metric;   /* continuous 0-1 sync quality behind
+                                       the binary freedv_synced flag */
+    float    freedv_clock_ppm;     /* codec2's own tx/rx sample-clock
+                                       offset estimate, ppm */
 } ipc_cm7_to_cm4_t;
 
 /*

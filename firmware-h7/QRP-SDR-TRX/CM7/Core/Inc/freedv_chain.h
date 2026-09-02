@@ -95,6 +95,20 @@ int freedv_chain_synced(void);
 /* Signal quality in dB, valid while synced. */
 float freedv_chain_snr(void);
 
+/* DIAGNOSTIC 2026-09-02, for the 2400B intermittent-sync investigation.
+   Estimated frequency offset in Hz - tests whether the demod is seeing
+   the wanted signal near the frequency it expects, or somewhere else
+   (a mirrored/misplaced spectrum shows up as a large or inconsistent
+   offset here). */
+float freedv_chain_foff(void);
+
+/* Continuous 0-1 sync quality behind the binary synced()/no flag - shows
+   near-misses the flag alone hides. */
+float freedv_chain_sync_metric(void);
+
+/* codec2's own tx/rx sample-clock offset estimate, in ppm. */
+float freedv_chain_clock_offset(void);
+
 /* Count of times the RX playback jitter buffer ran dry and had to rebuild
    its prefill cushion (freedv_chain_get_speech48()) - each occurrence mutes
    output until enough speech has banked back up again. */

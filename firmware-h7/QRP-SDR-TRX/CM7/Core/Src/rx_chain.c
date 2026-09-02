@@ -388,18 +388,25 @@ void freedv2400b_process_block(const uint16_t *in, uint16_t *out, int n)
     }
     rx_adc_peak = adc_peak;
 
-    /* Proper analytic pair: Q is a real Hilbert transform of I, and I is
-       delayed by the same group delay so the two legs line up. Building it
-       as (I_raw, filtered_I) - what the shared path above still does - combs
-       the effective response into nulls; see filters.c. audio_buf is free
-       scratch here, fm_discriminate() below is the first thing to write it. */
+    /* 2026-09-02: matched exactly to firmware/Core/Src/main.c's
+       freedv2400b_process_block() on the F746, which is hardware-confirmed
+       working - no delay compensation on I, no sign flips anywhere in this
+       block. The earlier "proper analytic pair" rebuild here (delay_fm2400,
+       negated Q, negated mixer output) was a from-scratch derivation that
+       measurably changed sync behavior but never matched the reference, and
+       the F746 discriminator (dsp.c, same formula as this file's
+       fm_discriminate()) proves that convention is self-consistent with
+       plain, undelayed I - so the delay compensation was solving a problem
+       the working reference doesn't have. Keeping hilbert_fm2400 (the wider
+       filter, a real, separate improvement over the shared 17-tap one for
+       2400B's +-4800 Hz sidebands) but using it the same way F746 uses its
+       hilbert: straight into Q, I left untouched. */
     arm_fir_f32(&hilbert_fm2400, I_buf, Q_buf, n);
-    arm_fir_f32(&delay_fm2400,   I_buf, audio_buf, n);
 
     for (int i = 0; i < n; i++)
     {
-        IQ_in[2*i + 0] =  audio_buf[i];  /* I, delay-matched to Q */
-        IQ_in[2*i + 1] = -Q_buf[i];      /* see sign note below */
+        IQ_in[2*i + 0] = I_buf[i];
+        IQ_in[2*i + 1] = Q_buf[i];
     }
 
     nco_block_iq(NCO_buf, n);

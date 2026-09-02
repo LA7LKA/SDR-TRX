@@ -60,6 +60,8 @@ ADC_HandleTypeDef hadc3;
 
 I2C_HandleTypeDef hi2c1;
 
+UART_HandleTypeDef huart3;
+
 /* USER CODE BEGIN PV */
 
 /* Hand-rolled, not CubeMX-generated: USART3 is muxed onto PD8/PD9 in the
@@ -76,6 +78,7 @@ static void MX_DMA_Init(void);
 static void MX_GPIO_Init(void);
 static void MX_I2C1_Init(void);
 static void MX_ADC3_Init(void);
+static void MX_USART3_UART_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -158,6 +161,7 @@ int main(void)
   MX_GPIO_Init();
   MX_I2C1_Init();
   MX_ADC3_Init();
+  MX_USART3_UART_Init();
   /* USER CODE BEGIN 2 */
 
   /* USART3 console - PD8/PD9 is this board's ST-LINK VCP, so no external
@@ -224,9 +228,9 @@ void PeriphCommonClock_Config(void)
   /** Initializes the peripherals clock
   */
   PeriphClkInitStruct.PeriphClockSelection = RCC_PERIPHCLK_ADC;
-  PeriphClkInitStruct.PLL2.PLL2M = 8;
-  PeriphClkInitStruct.PLL2.PLL2N = 48;
-  PeriphClkInitStruct.PLL2.PLL2P = 2;
+  PeriphClkInitStruct.PLL2.PLL2M = 2;
+  PeriphClkInitStruct.PLL2.PLL2N = 75;
+  PeriphClkInitStruct.PLL2.PLL2P = 4;
   PeriphClkInitStruct.PLL2.PLL2Q = 2;
   PeriphClkInitStruct.PLL2.PLL2R = 2;
   PeriphClkInitStruct.PLL2.PLL2RGE = RCC_PLL2VCIRANGE_1;
@@ -320,7 +324,7 @@ static void MX_I2C1_Init(void)
 
   /* USER CODE END I2C1_Init 1 */
   hi2c1.Instance = I2C1;
-  hi2c1.Init.Timing = 0x60404B5C;
+  hi2c1.Init.Timing = 0x307075B1;
   hi2c1.Init.OwnAddress1 = 0;
   hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
   hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
@@ -353,6 +357,54 @@ static void MX_I2C1_Init(void)
 }
 
 /**
+  * @brief USART3 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_USART3_UART_Init(void)
+{
+
+  /* USER CODE BEGIN USART3_Init 0 */
+
+  /* USER CODE END USART3_Init 0 */
+
+  /* USER CODE BEGIN USART3_Init 1 */
+
+  /* USER CODE END USART3_Init 1 */
+  huart3.Instance = USART3;
+  huart3.Init.BaudRate = 115200;
+  huart3.Init.WordLength = UART_WORDLENGTH_8B;
+  huart3.Init.StopBits = UART_STOPBITS_1;
+  huart3.Init.Parity = UART_PARITY_NONE;
+  huart3.Init.Mode = UART_MODE_TX_RX;
+  huart3.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart3.Init.OverSampling = UART_OVERSAMPLING_16;
+  huart3.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
+  huart3.Init.ClockPrescaler = UART_PRESCALER_DIV1;
+  huart3.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
+  if (HAL_UART_Init(&huart3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_UARTEx_SetTxFifoThreshold(&huart3, UART_TXFIFO_THRESHOLD_1_8) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_UARTEx_SetRxFifoThreshold(&huart3, UART_RXFIFO_THRESHOLD_1_8) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_UARTEx_DisableFifoMode(&huart3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN USART3_Init 2 */
+
+  /* USER CODE END USART3_Init 2 */
+
+}
+
+/**
   * Enable DMA controller clock
   */
 static void MX_DMA_Init(void)
@@ -370,7 +422,6 @@ static void MX_DMA_Init(void)
   */
 static void MX_GPIO_Init(void)
 {
-  GPIO_InitTypeDef GPIO_InitStruct = {0};
   /* USER CODE BEGIN MX_GPIO_Init_1 */
 
   /* USER CODE END MX_GPIO_Init_1 */
@@ -379,14 +430,6 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOC_CLK_ENABLE();
   __HAL_RCC_GPIOD_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
-
-  /*Configure GPIO pins : PD8 PD9 */
-  GPIO_InitStruct.Pin = GPIO_PIN_8|GPIO_PIN_9;
-  GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  GPIO_InitStruct.Alternate = GPIO_AF7_USART3;
-  HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 

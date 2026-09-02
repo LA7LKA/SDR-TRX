@@ -47,7 +47,12 @@ float dc_block(float x, dc_block_t *st)
 float fm_deemph(float x, deemph_t *st)
 {
     const float fs  = 48000.0f;
-    const float tau = 0.00050f;
+    const float tau = 0.000075f; /* 75us, matching the TX pre-emphasis
+                                     (GNU Radio bench flowgraph and the FM
+                                     standard) - was 500us, a de-emphasis
+                                     cutoff of ~320Hz instead of the correct
+                                     ~2.1kHz, rolling off most of the vocal
+                                     range rather than just the top end */
     const float a   = expf(-1.0f / (fs * tau));
 
     float y = a * st->y_prev + (1.0f - a) * x;
@@ -130,6 +135,12 @@ void fm_discriminate(const float *I_in, const float *Q_in, float *out, int n)
         float I = I_in[i];
         float Q = Q_in[i];
 
+        /* 2026-09-02: reverted the "sign fix" tried earlier - the F746
+           reference (firmware/Core/Src/dsp.c), which decodes 2400B
+           correctly on hardware, uses this exact formula. It only looked
+           wrong against the textbook z[n]*conj(z[n-1]) derivation; this
+           codebase's own NCO/mixing convention is self-consistent with it
+           as originally written, and the working reference proves it. */
         float re = I * prev_I + Q * prev_Q;
         float im = I * prev_Q - Q * prev_I;
 
@@ -157,6 +168,8 @@ void nbfm_demod(float *I_in, float *Q_in, float *audio_out, int n)
         float I = I_in[i];
         float Q = Q_in[i];
 
+        /* 2026-09-02: reverted along with fm_discriminate() above - see
+           that comment. Matches the F746 reference. */
         float re = I * prev_I + Q * prev_Q;
         float im = I * prev_Q - Q * prev_I;
 

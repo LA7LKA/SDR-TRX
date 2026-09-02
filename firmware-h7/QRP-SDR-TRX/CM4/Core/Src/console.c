@@ -84,8 +84,13 @@ static void cmd_status(void)
 
     if (st.freedv_synced || st.freedv_snr_db != 0.0f)
     {
-        snprintf(line, sizeof(line), "freedv: sync=%s snr=%.1fdB\r\n",
-                 st.freedv_synced ? "yes" : "no", (double)st.freedv_snr_db);
+        snprintf(line, sizeof(line), "freedv: sync=%s snr=%.1fdB metric=%.2f\r\n",
+                 st.freedv_synced ? "yes" : "no", (double)st.freedv_snr_db,
+                 (double)st.freedv_sync_metric);
+        console_print(line);
+
+        snprintf(line, sizeof(line), "freedv: foff=%.1fHz clock_offset=%.1fppm\r\n",
+                 (double)st.freedv_foff_hz, (double)st.freedv_clock_ppm);
         console_print(line);
     }
 

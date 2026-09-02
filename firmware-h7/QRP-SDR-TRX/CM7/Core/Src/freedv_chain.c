@@ -8,6 +8,7 @@
 #include "arm_math.h"
 #include "codec2_fifo.h"
 #include "freedv_api.h"
+#include "modem_stats.h"
 
 extern void uart_puts(const char *s);
 extern void uart_flush_blocking(void);
@@ -389,6 +390,18 @@ static struct FIFO   *out_fifo;  /* 8 kHz decoded speech */
 static int   sync_flag;
 static float snr_db;
 
+/* DIAGNOSTIC 2026-09-02: extended modem stats for chasing the 2400B
+   intermittent-sync problem. foff directly tests whether the demod is
+   seeing the wanted signal at roughly the frequency it expects (a
+   mirrored/misplaced spectrum would show up as a large or wildly
+   inconsistent offset); sync_metric is the continuous 0-1 quality behind
+   the binary sync flag, so it shows near-misses the flag alone hides;
+   clock_offset is codec2's own tx/rx sample-clock estimate in ppm, useful
+   given the whole clock-quality investigation this session. */
+static float foff_hz;
+static float sync_metric;
+static float clock_offset_ppm;
+
 /*
  * 2400B's modem runs at 48 kHz, the same rate the radio feeds us, so its input
  * goes straight to the demodulator. Only 1600, whose modem wants 8 kHz, needs
@@ -566,6 +579,13 @@ static void run_demod(void)
         int nout = freedv_rx(fdv, speech, demod_in);
 
         freedv_get_modem_stats(fdv, &sync_flag, &snr_db);
+        {
+            struct MODEM_STATS ms;
+            freedv_get_modem_extended_stats(fdv, &ms);
+            foff_hz          = ms.foff;
+            sync_metric      = ms.sync_metric;
+            clock_offset_ppm = ms.clock_offset;
+        }
 
         if (nout > 0 && codec2_fifo_free(out_fifo) >= nout)
             codec2_fifo_write(out_fifo, speech, nout);
@@ -967,4 +987,19 @@ int freedv_chain_synced(void)
 float freedv_chain_snr(void)
 {
     return snr_db;
+}
+
+float freedv_chain_foff(void)
+{
+    return foff_hz;
+}
+
+float freedv_chain_sync_metric(void)
+{
+    return sync_metric;
+}
+
+float freedv_chain_clock_offset(void)
+{
+    return clock_offset_ppm;
 }

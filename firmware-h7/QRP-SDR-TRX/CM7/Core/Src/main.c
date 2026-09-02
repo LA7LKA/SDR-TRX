@@ -104,6 +104,8 @@ OPAMP_HandleTypeDef hopamp1;
 TIM_HandleTypeDef htim2;
 TIM_HandleTypeDef htim6;
 
+UART_HandleTypeDef huart3;
+
 /* USER CODE BEGIN PV */
 
 /*
@@ -699,6 +701,9 @@ Error_Handler();
             status.mode           = MODE;
             status.freedv_synced  = freedv_ok ? freedv_chain_synced() : 0;
             status.freedv_snr_db  = freedv_ok ? freedv_chain_snr() : 0.0f;
+            status.freedv_foff_hz     = freedv_ok ? freedv_chain_foff() : 0.0f;
+            status.freedv_sync_metric = freedv_ok ? freedv_chain_sync_metric() : 0.0f;
+            status.freedv_clock_ppm   = freedv_ok ? freedv_chain_clock_offset() : 0.0f;
 
             /* process_block() runs on n = block_size_for(MODE)/2 samples
                per call (see the block_ready dispatch below) at 48 kHz -
@@ -760,14 +765,16 @@ void SystemClock_Config(void)
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
-  RCC_OscInitStruct.HSEState = RCC_HSE_ON;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI48|RCC_OSCILLATORTYPE_CSI;
+  RCC_OscInitStruct.HSI48State = RCC_HSI48_ON;
+  RCC_OscInitStruct.CSIState = RCC_CSI_ON;
+  RCC_OscInitStruct.CSICalibrationValue = RCC_CSICALIBRATION_DEFAULT;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
-  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
-  RCC_OscInitStruct.PLL.PLLM = 8;
-  RCC_OscInitStruct.PLL.PLLN = 307;
+  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_CSI;
+  RCC_OscInitStruct.PLL.PLLM = 2;
+  RCC_OscInitStruct.PLL.PLLN = 480;
   RCC_OscInitStruct.PLL.PLLP = 2;
-  RCC_OscInitStruct.PLL.PLLQ = 20;
+  RCC_OscInitStruct.PLL.PLLQ = 16;
   RCC_OscInitStruct.PLL.PLLR = 2;
   RCC_OscInitStruct.PLL.PLLRGE = RCC_PLL1VCIRANGE_1;
   RCC_OscInitStruct.PLL.PLLVCOSEL = RCC_PLL1VCOWIDE;
@@ -807,9 +814,9 @@ void PeriphCommonClock_Config(void)
   /** Initializes the peripherals clock
   */
   PeriphClkInitStruct.PeriphClockSelection = RCC_PERIPHCLK_ADC;
-  PeriphClkInitStruct.PLL2.PLL2M = 8;
-  PeriphClkInitStruct.PLL2.PLL2N = 48;
-  PeriphClkInitStruct.PLL2.PLL2P = 2;
+  PeriphClkInitStruct.PLL2.PLL2M = 2;
+  PeriphClkInitStruct.PLL2.PLL2N = 75;
+  PeriphClkInitStruct.PLL2.PLL2P = 4;
   PeriphClkInitStruct.PLL2.PLL2Q = 2;
   PeriphClkInitStruct.PLL2.PLL2R = 2;
   PeriphClkInitStruct.PLL2.PLL2RGE = RCC_PLL2VCIRANGE_1;
@@ -1114,6 +1121,54 @@ static void MX_TIM6_Init(void)
   /* USER CODE BEGIN TIM6_Init 2 */
 
   /* USER CODE END TIM6_Init 2 */
+
+}
+
+/**
+  * @brief USART3 Initialization Function
+  * @param None
+  * @retval None
+  */
+void MX_USART3_UART_Init(void)
+{
+
+  /* USER CODE BEGIN USART3_Init 0 */
+
+  /* USER CODE END USART3_Init 0 */
+
+  /* USER CODE BEGIN USART3_Init 1 */
+
+  /* USER CODE END USART3_Init 1 */
+  huart3.Instance = USART3;
+  huart3.Init.BaudRate = 115200;
+  huart3.Init.WordLength = UART_WORDLENGTH_8B;
+  huart3.Init.StopBits = UART_STOPBITS_1;
+  huart3.Init.Parity = UART_PARITY_NONE;
+  huart3.Init.Mode = UART_MODE_TX_RX;
+  huart3.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart3.Init.OverSampling = UART_OVERSAMPLING_16;
+  huart3.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
+  huart3.Init.ClockPrescaler = UART_PRESCALER_DIV1;
+  huart3.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
+  if (HAL_UART_Init(&huart3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_UARTEx_SetTxFifoThreshold(&huart3, UART_TXFIFO_THRESHOLD_1_8) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_UARTEx_SetRxFifoThreshold(&huart3, UART_RXFIFO_THRESHOLD_1_8) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_UARTEx_DisableFifoMode(&huart3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN USART3_Init 2 */
+
+  /* USER CODE END USART3_Init 2 */
 
 }
 
