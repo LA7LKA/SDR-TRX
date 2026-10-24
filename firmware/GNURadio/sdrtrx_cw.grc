@@ -195,9 +195,9 @@ blocks:
   parameters:
     affinity: ''
     alias: ''
-    comment: ''
+    comment: Focusrite Scarlett Solo - listen to what the radio receives
     device_name: plughw:CARD=USB,DEV=0
-    num_inputs: '1'
+    num_inputs: '2'
     ok_to_block: 'True'
     samp_rate: samp_rate
   states:
@@ -206,7 +206,7 @@ blocks:
     bus_structure: null
     coordinate: [1200, 256.0]
     rotation: 0
-    state: disabled
+    state: enabled
 - name: audio_source_0
   id: audio_source
   parameters:
@@ -231,11 +231,11 @@ blocks:
   parameters:
     affinity: ''
     alias: ''
-    comment: ''
+    comment: Nucleo USB audio in (stereo) - in mode iq this is raw I/Q, use mode cw to hear audio
     device_name: plughw:CARD=Audio,DEV=0
     maxoutbuf: '0'
     minoutbuf: '0'
-    num_outputs: '1'
+    num_outputs: '2'
     ok_to_block: 'False'
     samp_rate: samp_rate
   states:
@@ -244,7 +244,7 @@ blocks:
     bus_structure: null
     coordinate: [960, 256.0]
     rotation: 0
-    state: disabled
+    state: enabled
 - name: audio_source_0_1_0
   id: audio_source
   parameters:
@@ -494,6 +494,7 @@ blocks:
     state: enabled
 
 connections:
+- [audio_source_0_1, '1', audio_sink_0_0_1, '1']
 - [audio_sink_0_iq_hilbert, '0', audio_sink_0_iq_c2f, '0']
 - [audio_sink_0_iq_c2f, '0', audio_sink_0, '0']
 - [audio_sink_0_iq_c2f, '1', audio_sink_0, '1']

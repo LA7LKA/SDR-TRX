@@ -57,6 +57,18 @@ blocks:
     coordinate: [320, 12]
     rotation: 0
     state: enabled
+- name: iq_dev
+  id: variable
+  parameters:
+    comment: stereo I/Q sound card on the I/Q adapter board (L = I, R = Q)
+    value: '''plughw:CARD=CODEC,DEV=0'''
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [200, 12]
+    rotation: 0
+    state: enabled
 - name: samp_rate
   id: variable
   parameters:
@@ -101,7 +113,7 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [216, 296.0]
+    coordinate: [272, 400.0]
     rotation: 0
     state: enabled
 - name: analog_sig_source_x_0_0
@@ -158,7 +170,7 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [896, 584.0]
+    coordinate: [696, 768.0]
     rotation: 0
     state: enabled
 - name: audio_sink_0_0_0
@@ -175,10 +187,61 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [1240, 440.0]
+    coordinate: [880, 512.0]
     rotation: 0
     state: disabled
 - name: audio_sink_0_0_1
+  id: audio_sink
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: Focusrite Scarlett Solo - listen to what the radio receives
+    device_name: plughw:CARD=USB,DEV=0
+    num_inputs: '2'
+    ok_to_block: 'True'
+    samp_rate: samp_rate
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [880, 424.0]
+    rotation: 0
+    state: enabled
+- name: audio_sink_0_0_iq_c2f
+  id: blocks_complex_to_float
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [504, 768.0]
+    rotation: 0
+    state: enabled
+- name: audio_sink_0_0_iq_hilbert
+  id: hilbert_fc
+  parameters:
+    affinity: ''
+    alias: ''
+    beta: '6.76'
+    comment: real IF -> analytic, I/Q of the old mono IF
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_taps: '257'
+    win: window.WIN_HAMMING
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [328, 776.0]
+    rotation: 0
+    state: enabled
+- name: audio_sink_0_1
   id: audio_sink
   parameters:
     affinity: ''
@@ -192,26 +255,9 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [1240, 352.0]
-    rotation: 0
-    state: disabled
-- name: audio_sink_0_1
-  id: audio_sink
-  parameters:
-    affinity: ''
-    alias: ''
-    comment: ''
-    device_name: plughw:CARD=J380,DEV=0
-    num_inputs: '1'
-    ok_to_block: 'True'
-    samp_rate: samp_rate
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
     coordinate: [1200, 192.0]
     rotation: 0
-    state: enabled
+    state: disabled
 - name: audio_source_0
   id: audio_source
   parameters:
@@ -230,7 +276,7 @@ blocks:
     bus_structure: null
     coordinate: [8, 144.0]
     rotation: 0
-    state: enabled
+    state: disabled
 - name: audio_source_0_0
   id: audio_source
   parameters:
@@ -255,20 +301,21 @@ blocks:
   parameters:
     affinity: ''
     alias: ''
-    comment: ''
+    comment: Nucleo USB audio in (stereo) - in mode iq this is raw I/Q, use mode usb/lsb
+      to hear audio
     device_name: plughw:CARD=Audio,DEV=0
     maxoutbuf: '0'
     minoutbuf: '0'
-    num_outputs: '1'
+    num_outputs: '2'
     ok_to_block: 'True'
     samp_rate: samp_rate
   states:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [1000, 352.0]
+    coordinate: [640, 424.0]
     rotation: 0
-    state: disabled
+    state: enabled
 - name: audio_source_0_1_0
   id: audio_source
   parameters:
@@ -285,7 +332,23 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [1000, 440.0]
+    coordinate: [640, 512.0]
+    rotation: 0
+    state: disabled
+- name: audio_source_0_iq_f2c
+  id: blocks_float_to_complex
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: L = I, R = Q from the radio's DAC pair
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [228, 224.0]
     rotation: 0
     state: disabled
 - name: band_pass_filter_0
@@ -312,7 +375,7 @@ blocks:
     bus_structure: null
     coordinate: [584, 116.0]
     rotation: 0
-    state: enabled
+    state: disabled
 - name: band_pass_filter_0_0
   id: band_pass_filter
   parameters:
@@ -353,7 +416,7 @@ blocks:
     bus_structure: null
     coordinate: [792, 176.0]
     rotation: 0
-    state: enabled
+    state: disabled
 - name: blocks_complex_to_real_0_0
   id: blocks_complex_to_real
   parameters:
@@ -409,7 +472,7 @@ blocks:
     bus_structure: null
     coordinate: [952, 168.0]
     rotation: 0
-    state: enabled
+    state: disabled
 - name: blocks_multiply_xx_0
   id: blocks_multiply_xx
   parameters:
@@ -427,7 +490,7 @@ blocks:
     bus_structure: null
     coordinate: [416, 160.0]
     rotation: 0
-    state: enabled
+    state: disabled
 - name: blocks_multiply_xx_0_0
   id: blocks_multiply_xx
   parameters:
@@ -562,7 +625,7 @@ blocks:
     bus_structure: null
     coordinate: [568, 296.0]
     rotation: 0
-    state: enabled
+    state: disabled
 - name: qtgui_waterfall_sink_x_0
   id: qtgui_waterfall_sink_x
   parameters:
@@ -623,86 +686,22 @@ blocks:
     bus_structure: null
     coordinate: [832, 320.0]
     rotation: 0
-    state: enabled
-- name: audio_sink_0_0_iq_hilbert
-  id: hilbert_fc
-  parameters:
-    affinity: ''
-    alias: ''
-    beta: '6.76'
-    comment: real IF -> analytic, I/Q of the old mono IF
-    maxoutbuf: '0'
-    minoutbuf: '0'
-    num_taps: '257'
-    win: window.WIN_HAMMING
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate: [536, 664.0]
-    rotation: 0
-    state: enabled
-- name: audio_sink_0_0_iq_c2f
-  id: blocks_complex_to_float
-  parameters:
-    affinity: ''
-    alias: ''
-    comment: ''
-    maxoutbuf: '0'
-    minoutbuf: '0'
-    vlen: '1'
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate: [716, 664.0]
-    rotation: 0
-    state: enabled
-- name: audio_source_0_iq_f2c
-  id: blocks_float_to_complex
-  parameters:
-    affinity: ''
-    alias: ''
-    comment: L = I, R = Q from the radio's DAC pair
-    maxoutbuf: '0'
-    minoutbuf: '0'
-    vlen: '1'
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate: [228, 224.0]
-    rotation: 0
-    state: enabled
-- name: iq_dev
-  id: variable
-  parameters:
-    affinity: ''
-    alias: ''
-    comment: stereo I/Q sound card on the I/Q adapter board (L = I, R = Q)
-    maxoutbuf: '0'
-    minoutbuf: '0'
-    value: '''plughw:CARD=CODEC,DEV=0'''
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate: [200, 12]
-    rotation: 0
-    state: enabled
+    state: disabled
 
 connections:
-- [audio_sink_0_0_iq_hilbert, '0', audio_sink_0_0_iq_c2f, '0']
-- [audio_sink_0_0_iq_c2f, '0', audio_sink_0_0, '0']
-- [audio_sink_0_0_iq_c2f, '1', audio_sink_0_0, '1']
-- [audio_source_0, '0', audio_source_0_iq_f2c, '0']
-- [audio_source_0, '1', audio_source_0_iq_f2c, '1']
 - [analog_sig_source_x_0, '0', blocks_multiply_xx_0, '1']
 - [analog_sig_source_x_0, '0', blocks_multiply_xx_0_0, '0']
 - [analog_sig_source_x_0_0, '0', band_pass_filter_0_0, '0']
+- [audio_sink_0_0_iq_c2f, '0', audio_sink_0_0, '0']
+- [audio_sink_0_0_iq_c2f, '1', audio_sink_0_0, '1']
+- [audio_sink_0_0_iq_hilbert, '0', audio_sink_0_0_iq_c2f, '0']
+- [audio_source_0, '0', audio_source_0_iq_f2c, '0']
+- [audio_source_0, '1', audio_source_0_iq_f2c, '1']
 - [audio_source_0_0, '0', band_pass_filter_0_0, '0']
 - [audio_source_0_1, '0', audio_sink_0_0_1, '0']
+- [audio_source_0_1, '1', audio_sink_0_0_1, '1']
 - [audio_source_0_1_0, '0', audio_sink_0_0_0, '0']
+- [audio_source_0_iq_f2c, '0', blocks_multiply_xx_0, '0']
 - [band_pass_filter_0, '0', blocks_complex_to_real_0, '0']
 - [band_pass_filter_0, '0', qtgui_waterfall_sink_x_0, '0']
 - [band_pass_filter_0_0, '0', hilbert_fc_0_0, '0']
@@ -714,9 +713,8 @@ connections:
 - [blocks_multiply_xx_0, '0', band_pass_filter_0, '0']
 - [blocks_multiply_xx_0, '0', qtgui_freq_sink_x_0, '0']
 - [blocks_multiply_xx_0_0, '0', blocks_complex_to_real_0_0, '0']
-- [audio_source_0_iq_f2c, '0', blocks_multiply_xx_0, '0']
 - [hilbert_fc_0_0, '0', blocks_multiply_xx_0_0, '1']
 
 metadata:
   file_format: 1
-  grc_version: 3.10.12.0
+  grc_version: 3.10.9.2
