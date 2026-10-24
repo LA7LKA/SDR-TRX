@@ -34,7 +34,8 @@ BENCH_CARD = re.compile(r"(CARD=)?Generic(_1)?,DEV=0")
 
 
 def block_text(name, bid, params, xy, comment=""):
-    p = {"affinity": "''", "alias": "''", "comment": comment or "''",
+    quoted = "'" + comment.replace("'", "''") + "'"   # comments are free text - always quote
+    p = {"affinity": "''", "alias": "''", "comment": quoted,
          "maxoutbuf": "'0'", "minoutbuf": "'0'", **params}
     lines = [f"- name: {name}", f"  id: {bid}", "  parameters:"]
     lines += [f"    {k}: {p[k]}" for k in sorted(p)]
@@ -145,8 +146,47 @@ def convert(path):
     return report
 
 
+Q_TRIM_DB = -8.0   # measured 2026-10-25: UM2-L/adapter I path 8.0 dB down on Q, flat 1-18 kHz
+
+
+def add_q_trim(path):
+    """Insert a gain trim on Q between each converted generator's
+    complex_to_float and its I/Q sink, set by a `q_trim_db` variable.
+
+    Compensates the bench's analog I/Q gain imbalance ahead of the radio's
+    ADC pair, so the radio sees a balanced I/Q stimulus. Q is turned down
+    rather than I up so the sound card can't clip. -8.0 dB took image
+    rejection from 7.3 dB to 44-48 dB across 6-15 kHz on the bench."""
+    text = open(path).read()
+    g = yaml.safe_load(text)
+    names = {b["name"] for b in g["blocks"]}
+    ed = GrcText(text)
+    new_blocks, report = "", []
+    for c in g["connections"]:
+        src, port, sink = c[0], c[1], c[2]
+        if not (src.endswith("_iq_c2f") and port == "1" and c[3] == "1"):
+            continue
+        trim = f"{sink}_iq_qtrim"
+        if trim in names:
+            continue
+        xy = next(b["states"]["coordinate"] for b in g["blocks"] if b["name"] == src)
+        new_blocks += block_text(trim, "blocks_multiply_const_vxx",
+                                 {"const": "10**(q_trim_db/20)", "type": "float", "vlen": "'1'"},
+                                 (xy[0] + 40, xy[1] + 100), "Q gain trim, see q_trim_db")
+        ed.replace_conn(c, [src, "1", trim, "0"])
+        ed.add_conns([[trim, "0", sink, "1"]])
+        report.append(f"q trim {sink}: complex_to_float Q -> x10**(q_trim_db/20) -> {sink}:1")
+    if report:
+        if "q_trim_db" not in names:
+            new_blocks += block_text("q_trim_db", "variable", {"value": f"'{Q_TRIM_DB}'"}, (360, 12),
+                                     "I/Q gain balance - dB applied to Q before the I/Q sound card")
+        ed.add_blocks(new_blocks)
+        open(path, "w").write(ed.t)
+    return report
+
+
 if __name__ == "__main__":
     for path in sys.argv[1:]:
         print(f"{path}:")
-        for line in convert(path) or ["(nothing to convert)"]:
+        for line in (convert(path) + add_q_trim(path)) or ["(nothing to convert)"]:
             print("   ", line)

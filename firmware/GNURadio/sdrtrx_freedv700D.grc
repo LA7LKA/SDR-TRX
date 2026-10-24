@@ -680,11 +680,46 @@ blocks:
     coordinate: [200, 12]
     rotation: 0
     state: enabled
+- name: audio_sink_0_iq_qtrim
+  id: blocks_multiply_const_vxx
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: Q gain trim, see q_trim_db
+    const: 10**(q_trim_db/20)
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    type: float
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [972, 612.0]
+    rotation: 0
+    state: enabled
+- name: q_trim_db
+  id: variable
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: 'I/Q gain balance - dB applied to Q before the I/Q sound card'
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    value: '-8.0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [360, 12]
+    rotation: 0
+    state: enabled
 
 connections:
+- [audio_sink_0_iq_qtrim, '0', audio_sink_0, '1']
 - [audio_sink_0_iq_hilbert, '0', audio_sink_0_iq_c2f, '0']
 - [audio_sink_0_iq_c2f, '0', audio_sink_0, '0']
-- [audio_sink_0_iq_c2f, '1', audio_sink_0, '1']
+- [audio_sink_0_iq_c2f, '1', audio_sink_0_iq_qtrim, '0']
 - [audio_source_0_0, '0', audio_source_0_0_iq_f2c, '0']
 - [audio_source_0_0, '1', audio_source_0_0_iq_f2c, '1']
 - [analog_sig_source_x_0, '0', blocks_multiply_xx_0, '1']
