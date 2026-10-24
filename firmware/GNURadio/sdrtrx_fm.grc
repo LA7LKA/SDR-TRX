@@ -153,8 +153,8 @@ blocks:
     affinity: ''
     alias: ''
     comment: ''
-    device_name: plughw:CARD=Generic_1,DEV=0
-    num_inputs: '1'
+    device_name: iq_dev
+    num_inputs: '2'
     ok_to_block: 'True'
     samp_rate: samp_rate
   states:
@@ -204,10 +204,10 @@ blocks:
     affinity: ''
     alias: ''
     comment: ''
-    device_name: plughw:CARD=Generic_1,DEV=0
+    device_name: iq_dev
     maxoutbuf: '0'
     minoutbuf: '0'
-    num_outputs: '1'
+    num_outputs: '2'
     ok_to_block: 'True'
     samp_rate: samp_rate
   states:
@@ -426,7 +426,7 @@ blocks:
     bus_structure: null
     coordinate: [256, 200.0]
     rotation: 0
-    state: enabled
+    state: disabled
 - name: low_pass_filter_0
   id: low_pass_filter
   parameters:
@@ -451,13 +451,83 @@ blocks:
     coordinate: [608, 200.0]
     rotation: 0
     state: enabled
+- name: audio_sink_0_0_0_iq_hilbert
+  id: hilbert_fc
+  parameters:
+    affinity: ''
+    alias: ''
+    beta: '6.76'
+    comment: real IF -> analytic, I/Q of the old mono IF
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    num_taps: '257'
+    win: window.WIN_HAMMING
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [856, 576.0]
+    rotation: 0
+    state: enabled
+- name: audio_sink_0_0_0_iq_c2f
+  id: blocks_complex_to_float
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: ''
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [1036, 576.0]
+    rotation: 0
+    state: enabled
+- name: audio_source_0_iq_f2c
+  id: blocks_float_to_complex
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: L = I, R = Q from the radio's DAC pair
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [220, 224.0]
+    rotation: 0
+    state: enabled
+- name: iq_dev
+  id: variable
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: stereo I/Q sound card on the I/Q adapter board (L = I, R = Q)
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    value: '''plughw:CARD=CODEC,DEV=0'''
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [200, 12]
+    rotation: 0
+    state: enabled
 
 connections:
+- [audio_sink_0_0_0_iq_hilbert, '0', audio_sink_0_0_0_iq_c2f, '0']
+- [audio_sink_0_0_0_iq_c2f, '0', audio_sink_0_0_0, '0']
+- [audio_sink_0_0_0_iq_c2f, '1', audio_sink_0_0_0, '1']
+- [audio_source_0, '0', audio_source_0_iq_f2c, '0']
+- [audio_source_0, '1', audio_source_0_iq_f2c, '1']
 - [analog_nbfm_rx_0, '0', blocks_multiply_const_vxx_0_0, '0']
 - [analog_nbfm_tx_0, '0', blocks_multiply_xx_0_0_0, '0']
 - [analog_sig_source_x_0_0, '0', blocks_multiply_xx_0_0, '1']
 - [analog_sig_source_x_0_0_1, '0', blocks_multiply_xx_0_0_0, '1']
-- [audio_source_0, '0', hilbert_fc_0_0, '0']
 - [audio_source_0_0, '0', band_pass_filter_0_0, '0']
 - [audio_source_0_1, '0', audio_sink_0_0_1, '0']
 - [audio_source_0_1_0, '0', audio_sink_0_0_0_0, '0']
@@ -465,10 +535,10 @@ connections:
 - [blocks_complex_to_real_0, '0', blocks_multiply_const_vxx_0_0_0, '0']
 - [blocks_file_source_0, '0', band_pass_filter_0_0, '0']
 - [blocks_multiply_const_vxx_0_0, '0', audio_sink_0_0, '0']
-- [blocks_multiply_const_vxx_0_0_0, '0', audio_sink_0_0_0, '0']
+- [blocks_multiply_const_vxx_0_0_0, '0', audio_sink_0_0_0_iq_hilbert, '0']
 - [blocks_multiply_xx_0_0, '0', low_pass_filter_0, '0']
 - [blocks_multiply_xx_0_0_0, '0', blocks_complex_to_real_0, '0']
-- [hilbert_fc_0_0, '0', blocks_multiply_xx_0_0, '0']
+- [audio_source_0_iq_f2c, '0', blocks_multiply_xx_0_0, '0']
 - [low_pass_filter_0, '0', analog_nbfm_rx_0, '0']
 
 metadata:
