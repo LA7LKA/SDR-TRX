@@ -86,6 +86,7 @@ static float   desired_cw_pitch_hz = CW_PITCH_DEFAULT_HZ;
 static int32_t desired_cw_wpm      = 20;
 static int32_t desired_cw_keyer_type = 0;
 static float   desired_mic_gain    = 1.0f;
+static int32_t desired_audio_usb   = 0;
 
 /* Was a hmi_poll()-local static; promoted to file scope so hmi_set_mode()
    (console.c's "mode" command) can reuse it too, preserving the same
@@ -104,6 +105,7 @@ static void ipc_push(int ptt)
     cmd.cw_wpm         = desired_cw_wpm;
     cmd.cw_keyer_type  = desired_cw_keyer_type;
     cmd.mic_gain       = desired_mic_gain;
+    cmd.audio_usb      = desired_audio_usb;
     ipc_cm4_to_cm7_write(&cmd);
 }
 
@@ -188,10 +190,10 @@ static void redraw(void)
     case FOCUS_RIT:     snprintf(fn_val, sizeof(fn_val), "RIT %ldHZ", (long)rit_offset_hz); break;
     default:            fn_val[0] = 0; break;
     }
-    /* USB Audio routing isn't ported yet (see main.c's porting notes) -
-       analog is the only real path right now, so this shows fixed rather
-       than reading a live audio_source. */
-    snprintf(l_audio_fn, sizeof(l_audio_fn), "A:ANLG FN:%s", fn_val);
+    /* What CM7 actually applied, not desired_audio_usb - it refuses USB
+       in FreeDV modes. */
+    snprintf(l_audio_fn, sizeof(l_audio_fn), "A:%s FN:%s",
+             cm7_status.audio_usb ? "USB" : "ANLG", fn_val);
 
     snprintf(l_mode, sizeof(l_mode), "M:%s %s", mode_name(cm7_status.mode), filt_name[filt_idx]);
 
@@ -221,6 +223,19 @@ void hmi_set_mode(int32_t mode)
 {
     desired_mode = mode;
     ipc_push(ptt_now_level);
+}
+
+/* BTN_ENTER and console.c's "src" command - same single-writer reasoning
+   as hmi_set_mode(). */
+void hmi_set_audio_usb(int32_t usb)
+{
+    desired_audio_usb = usb ? 1 : 0;
+    ipc_push(ptt_now_level);
+}
+
+int32_t hmi_audio_usb_actual(void)
+{
+    return cm7_status.audio_usb;
 }
 
 void hmi_init(I2C_HandleTypeDef *oled_i2c)
@@ -370,10 +385,10 @@ void hmi_poll(void)
     }
     if (btn_edge & (1u << (BTN_ENTER - 1)))
     {
-        /* USB Audio routing toggle on F746 - not wired up here yet (see
-           main.c's porting notes: this project's USB Audio class doesn't
-           have F746's composite duplex glue yet). Left as a no-op rather
-           than removed, so the button mapping stays stable once it is. */
+        /* USB Audio routing toggle, as on F746. Toggles from the state CM7
+           reports, not desired_audio_usb, so a refused request (FreeDV)
+           doesn't leave the button out of step. */
+        hmi_set_audio_usb(!cm7_status.audio_usb);
         changed = 1;
     }
 

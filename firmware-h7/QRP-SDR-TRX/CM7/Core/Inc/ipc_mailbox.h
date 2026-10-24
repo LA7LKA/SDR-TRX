@@ -42,6 +42,11 @@ typedef struct {
     int32_t  cw_wpm;
     int32_t  cw_keyer_type;        /* 0=straight, 1=iambic A, 2=iambic B */
     float    mic_gain;             /* 1..200, see filters.h */
+    int32_t  audio_usb;            /* 1 = route audio over USB (PC), 0 =
+                                       analog jack/mic - CM7 may refuse
+                                       (FreeDV is analog-only), so read
+                                       the actual state back from the
+                                       telemetry below */
 } ipc_cm4_to_cm7_t;
 
 /* CM7 -> CM4: RX telemetry + state, written by main.c's audio processing
@@ -54,6 +59,7 @@ typedef struct {
     int32_t  tx_active;
     int32_t  mode;                 /* echoed back, so the HMI can confirm a
                                        mode-change request actually landed */
+    int32_t  audio_usb;            /* audio source actually in effect */
     int32_t  freedv_synced;
     float    freedv_snr_db;
     float    rx_load_pct;          /* process_block() worst-case time as a

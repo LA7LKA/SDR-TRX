@@ -23,7 +23,7 @@
 #include "stm32h7xx_hal.h"
 #include "usbd_def.h"
 #include "usbd_core.h"
-#include "usbd_audio.h"
+#include "usbd_audio_duplex.h"
 
 /* USER CODE BEGIN Includes */
 
@@ -107,6 +107,21 @@ void HAL_PCD_MspInit(PCD_HandleTypeDef* pcdHandle)
     HAL_NVIC_SetPriority(OTG_FS_IRQn, 0, 0);
     HAL_NVIC_EnableIRQ(OTG_FS_IRQn);
   /* USER CODE BEGIN USB_OTG_FS_MspInit 1 */
+    /* HSI48 (the USB clock above) is only ~+-3% untrimmed - CRS trims it
+       continuously against the host's 1 kHz SOF so the 12 Mbit/s bit
+       timing and the 48 kHz isochronous audio both track the host clock.
+       USB2 = this OTG_FS core's SOF on H7. */
+    {
+      RCC_CRSInitTypeDef crs = {0};
+      __HAL_RCC_CRS_CLK_ENABLE();
+      crs.Prescaler             = RCC_CRS_SYNC_DIV1;
+      crs.Source                = RCC_CRS_SYNC_SOURCE_USB2;
+      crs.Polarity              = RCC_CRS_SYNC_POLARITY_RISING;
+      crs.ReloadValue           = __HAL_RCC_CRS_RELOADVALUE_CALCULATE(48000000, 1000);
+      crs.ErrorLimitValue       = RCC_CRS_ERRORLIMIT_DEFAULT;
+      crs.HSI48CalibrationValue = RCC_CRS_HSI48CALIBRATION_DEFAULT;
+      HAL_RCCEx_CRSConfig(&crs);
+    }
 
   /* USER CODE END USB_OTG_FS_MspInit 1 */
   }
@@ -379,9 +394,18 @@ USBD_StatusTypeDef USBD_LL_Init(USBD_HandleTypeDef *pdev)
   HAL_PCD_RegisterIsoInIncpltCallback(&hpcd_USB_OTG_FS, PCD_ISOINIncompleteCallback);
 #endif /* USE_HAL_PCD_REGISTER_CALLBACKS */
   /* USER CODE BEGIN TxRx_Configuration */
+  /* Composite Audio+CDC (usbd_audio_duplex.c), same endpoint map as
+     F746. RX is shared by EP0-OUT, EP1-OUT (speaker, 96 B/ms ISO) and
+     EP3-OUT (CDC bulk). TX0 = EP0 control IN, TX1 = EP1 IN (mic, 96 B/ms,
+     room for ~2 packets), TX2 = EP2 IN (CDC notifications, tiny), TX3 =
+     EP3 IN (CDC bulk, 64 B packets). 0x80+0x40+0x80+0x10+0x40 = 0x1D0
+     words, well inside this OTG_FS core's 4 KB (0x400-word) FIFO RAM -
+     F746's 1.25 KB core needed tighter sizes. */
   HAL_PCDEx_SetRxFiFo(&hpcd_USB_OTG_FS, 0x80);
   HAL_PCDEx_SetTxFiFo(&hpcd_USB_OTG_FS, 0, 0x40);
   HAL_PCDEx_SetTxFiFo(&hpcd_USB_OTG_FS, 1, 0x80);
+  HAL_PCDEx_SetTxFiFo(&hpcd_USB_OTG_FS, 2, 0x10);
+  HAL_PCDEx_SetTxFiFo(&hpcd_USB_OTG_FS, 3, 0x40);
   /* USER CODE END TxRx_Configuration */
   }
   return USBD_OK;
@@ -642,7 +666,7 @@ USBD_StatusTypeDef USBD_LL_SetTestMode(USBD_HandleTypeDef *pdev, uint8_t testmod
 void *USBD_static_malloc(uint32_t size)
 {
   UNUSED(size);
-  static uint32_t mem[(sizeof(USBD_AUDIO_HandleTypeDef)/4)+1];/* On 32-bit boundary */
+  static uint32_t mem[(sizeof(USBD_AUDIO_DUPLEX_HandleTypeDef)/4)+1];/* On 32-bit boundary */
   return mem;
 }
 

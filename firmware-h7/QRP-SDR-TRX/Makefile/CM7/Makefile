@@ -82,7 +82,7 @@ C_SOURCES =  \
 ../../CM7/USB_DEVICE/App/usbd_desc.c \
 ../../CM7/USB_DEVICE/App/usbd_audio_if.c \
 ../../CM7/USB_DEVICE/Target/usbd_conf.c \
-../../Middlewares/ST/STM32_USB_Device_Library/Class/AUDIO/Src/usbd_audio.c \
+../../Middlewares/ST/STM32_USB_Device_Library/Class/AUDIO_DUPLEX/Src/usbd_audio_duplex.c \
 ../../Middlewares/ST/STM32_USB_Device_Library/Core/Src/usbd_core.c \
 ../../Middlewares/ST/STM32_USB_Device_Library/Core/Src/usbd_ctlreq.c \
 ../../Middlewares/ST/STM32_USB_Device_Library/Core/Src/usbd_ioreq.c \
@@ -250,7 +250,7 @@ C_INCLUDES =  \
 -I../../CM7/USB_DEVICE/App \
 -I../../CM7/USB_DEVICE/Target \
 -I../../Middlewares/ST/STM32_USB_Device_Library/Core/Inc \
--I../../Middlewares/ST/STM32_USB_Device_Library/Class/AUDIO/Inc \
+-I../../Middlewares/ST/STM32_USB_Device_Library/Class/AUDIO_DUPLEX/Inc \
 -I../../Drivers/CMSIS/DSP/Include \
 -I../../../../firmware/codec2/src \
 -I../../../../firmware/codec2 \

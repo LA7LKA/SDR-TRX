@@ -69,7 +69,8 @@ static void cmd_help(void)
     console_print("\r\ncommands:\r\n"
                   "  help             this text\r\n"
                   "  status           mode, RX level, FreeDV sync/SNR, CPU load\r\n"
-                  "  mode <name>      nbfm usb lsb am cw freedv1600 freedv2400b freedv700d freedv700e\r\n");
+                  "  mode <name>      nbfm usb lsb am cw freedv1600 freedv2400b freedv700d freedv700e\r\n"
+                  "  src [usb|analog] audio over USB (PC) or the analog jack/mic; no arg toggles\r\n");
 }
 
 static void cmd_status(void)
@@ -78,8 +79,9 @@ static void cmd_status(void)
     ipc_cm7_to_cm4_read(&st);
 
     char line[96];
-    snprintf(line, sizeof(line), "\r\nmode=%s tx=%s rx_rms=%.4f\r\n",
-             mode_name(st.mode), st.tx_active ? "yes" : "no", (double)st.rx_rms);
+    snprintf(line, sizeof(line), "\r\nmode=%s tx=%s audio=%s rx_rms=%.4f\r\n",
+             mode_name(st.mode), st.tx_active ? "yes" : "no",
+             st.audio_usb ? "usb" : "analog", (double)st.rx_rms);
     console_print(line);
 
     if (st.freedv_synced || st.freedv_snr_db != 0.0f)
@@ -145,6 +147,25 @@ static void cmd_mode(char *arg)
     console_print("\r\nunknown mode - see 'help'\r\n");
 }
 
+static void cmd_src(char *arg)
+{
+    int32_t want;
+
+    if (!arg || !*arg)                 want = !hmi_audio_usb_actual();
+    else if (strcmp(arg, "usb") == 0)    want = 1;
+    else if (strcmp(arg, "analog") == 0) want = 0;
+    else
+    {
+        console_print("\r\nusage: src [usb|analog]\r\n");
+        return;
+    }
+    hmi_set_audio_usb(want);
+    /* CM7 applies it on its next main-loop pass and may refuse (FreeDV is
+       analog-only) - 'status' shows what actually took effect. */
+    console_print(want ? "\r\naudio src -> USB requested\r\n"
+                       : "\r\naudio src -> analog requested\r\n");
+}
+
 static void dispatch(char *line)
 {
     while (*line == ' ') line++;
@@ -156,6 +177,7 @@ static void dispatch(char *line)
     if      (strcmp(line, "help")   == 0) cmd_help();
     else if (strcmp(line, "status") == 0) cmd_status();
     else if (strcmp(line, "mode")   == 0) cmd_mode(arg);
+    else if (strcmp(line, "src")    == 0) cmd_src(arg);
     else
     {
         console_print("\r\nunknown command - try 'help'\r\n");

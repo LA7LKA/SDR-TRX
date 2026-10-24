@@ -19,6 +19,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "usb_device.h"
+#include "usbd_audio_duplex.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -110,15 +111,17 @@ UART_HandleTypeDef huart3;
 
 /*
  * ADC/DAC ring buffers, shared scratch, and RX/TX dispatch - ported from
- * firmware/Core/Src/main.c. NOT YET PORTED from F746, deliberately: the
- * USB Audio glue (usb_audio_tx_source()/usb_audio_rx_capture()/
- * usb_audio_mic_tx_update(), audio_source switching) - F746's is built on
- * a hand-written composite Audio+CDC class (usbd_audio_duplex.c) that
- * doesn't exist here yet; this project's CubeMX-generated USB Audio class
- * is the stock single-direction one. Analog RX/TX works fully below; USB
- * audio integration is separate follow-up work, not a shortcut taken here.
- * Likewise the UART console/telemetry (uart_puts() etc. are no-op stubs -
- * USART3 isn't enabled in this .ioc yet) and the CAT command layer.
+ * firmware/Core/Src/main.c, including the USB Audio glue on top of F746's
+ * composite Audio+CDC class (usbd_audio_duplex.c). NOT YET PORTED: the
+ * CAT command layer - the CDC port only echoes for now (see the main
+ * loop) - and CM7's own UART telemetry (uart_puts() etc. are no-op
+ * stubs; the console lives on CM4).
+ *
+ * CubeMX caveat: usb_device.c, usbd_conf.c/.h and usbd_desc.c are edited
+ * by hand for the composite class (usbd_desc.c and usbd_audio_if.c/.h are
+ * F746's files verbatim). Regenerating with the .ioc's USB_DEVICE AUDIO
+ * middleware still enabled will put the stock class back - check the diff
+ * after any CubeMX regen.
  */
 
 #define ADC_RING_BLOCKS 4
@@ -227,6 +230,130 @@ static void dsp_and_dma_flush(void)
 }
 
 /*
+ * USB Audio glue, ported from F746 (firmware/Core/Src/main.c) - see there
+ * for the debugging history behind each choice; only what differs on H7
+ * is spelled out here. audio_source picks where RX audio goes (DAC_OUT1
+ * headphone jack, or the USB "microphone" to the PC) and where TX audio
+ * comes from (ADC2 mic, or the USB "speaker" from the PC) - one or the
+ * other, never mixed. Changed only via audio_source_set().
+ */
+typedef enum { AUDIO_SRC_ANALOG = 0, AUDIO_SRC_USB } audio_src_t;
+volatile audio_src_t audio_source = AUDIO_SRC_ANALOG;
+
+extern USBD_HandleTypeDef hUsbDeviceFS;
+
+static void audio_dma_restart(void);
+
+/* RX audio leaves process_block() as 12-bit DAC samples centred on
+   DAC_MID; USB PCM is 16-bit signed. <<4 covers 12->16 bits exactly. */
+static inline int16_t dac_sample_to_pcm16(uint16_t raw)
+{
+    int32_t v = ((int32_t)raw - DAC_MID) << 4;
+    if (v >  32767) v =  32767;
+    if (v < -32768) v = -32768;
+    return (int16_t)v;
+}
+
+/* TX audio enters the chains as raw ADC samples, which unlike F746 are
+   16-bit here (ADC_RESOLUTION_16B, centred on ADC_MID_16B) - so USB PCM
+   maps across by offset alone, no shift. */
+static inline uint16_t pcm16_to_adc_sample(int16_t pcm)
+{
+    return (uint16_t)((int32_t)pcm + 32768);
+}
+
+/* Returns the buffer the (non-buffered) TX modulator should read this
+   block: the ADC slice itself, or a private buffer of USB speaker audio
+   when SRC_USB. Never writes into adc_buffer - ADC2's DMA is still
+   running into it (F746 learned that the hard way: chopped TX audio). */
+static const uint16_t *usb_audio_tx_source(const uint16_t *adc_slice, uint32_t n)
+{
+    static uint16_t usb_tx_buf[BLOCK_SIZE_ANALOG / 2];
+    static int16_t  pcm[BLOCK_SIZE_ANALOG / 2];
+
+    if (audio_source != AUDIO_SRC_USB || n > (BLOCK_SIZE_ANALOG / 2))
+        return adc_slice;
+
+    USBD_AUDIO_DUPLEX_GetSpeakerAudio(&hUsbDeviceFS, pcm, n);
+
+    /* Every TX chain multiplies by mic_gain, calibrated for a weak analog
+       mic. PC audio is already near full scale, so undo that and leave
+       6 dB of headroom - without it F746 hard-clipped and splattered. */
+    const float USB_HEADROOM = 0.5f;
+    float inv_gain = USB_HEADROOM / mic_gain;
+    for (uint32_t i = 0; i < n; i++)
+    {
+        int32_t scaled = (int32_t)((float)pcm[i] * inv_gain);
+        if (scaled >  32767) scaled =  32767;
+        if (scaled < -32768) scaled = -32768;
+        usb_tx_buf[i] = pcm16_to_adc_sample((int16_t)scaled);
+    }
+    return usb_tx_buf;
+}
+
+/* Shared by the two functions below: one runs only during RX, the other
+   only during TX, so they never overlap. */
+static int16_t usb_mic_pcm[BLOCK_SIZE_MAX / 2];
+
+/* After an RX process_block(): when SRC_USB, send that block to the PC
+   instead of (not as well as) the headphone jack. When analog, keep the
+   USB mic fed with silence so the IN endpoint never replays stale data. */
+static void usb_audio_rx_capture(uint16_t *dac_slice, uint32_t n)
+{
+    if (audio_source != AUDIO_SRC_USB)
+    {
+        memset(usb_mic_pcm, 0, n * sizeof(usb_mic_pcm[0]));
+    }
+    else
+    {
+        for (uint32_t i = 0; i < n; i++)
+        {
+            usb_mic_pcm[i] = dac_sample_to_pcm16(dac_slice[i]);
+            dac_slice[i] = DAC_MID;
+        }
+    }
+    USBD_AUDIO_DUPLEX_FeedMic(&hUsbDeviceFS, usb_mic_pcm, n);
+}
+
+/* USB mic during TX: only CW's sidetone has anything to send (mirrors
+   DAC_OUT1, which also only carries audio during CW TX); every other case
+   sends silence. side_slice may be NULL (FreeDV TX) - only read for CW. */
+static void usb_audio_mic_tx_update(uint16_t *side_slice, uint32_t n)
+{
+    if (MODE == MODE_CW && audio_source == AUDIO_SRC_USB)
+    {
+        for (uint32_t i = 0; i < n; i++)
+        {
+            usb_mic_pcm[i] = dac_sample_to_pcm16(side_slice[i]);
+            side_slice[i] = DAC_MID;
+        }
+    }
+    else
+    {
+        memset(usb_mic_pcm, 0, n * sizeof(usb_mic_pcm[0]));
+    }
+    USBD_AUDIO_DUPLEX_FeedMic(&hUsbDeviceFS, usb_mic_pcm, n);
+}
+
+/* The only place audio_source changes. FreeDV stays analog-only, as on
+   F746 (decode + USB ISR load hard-faulted the allocator there). Not yet
+   re-measured on H7, which has far more headroom - revisit then rather
+   than assume. */
+static void audio_source_set(audio_src_t src)
+{
+    if (src == audio_source)
+        return;
+    if (src == AUDIO_SRC_USB && mode_is_freedv(MODE))
+        return;
+
+    audio_source = src;
+    USBD_AUDIO_DUPLEX_ResetSpeaker(&hUsbDeviceFS);
+    USBD_AUDIO_DUPLEX_ResetMic(&hUsbDeviceFS);
+    dsp_filters_init();
+    audio_dma_restart();   /* DAC_OUT1: DMA (analog) vs parked (USB) */
+}
+
+/*
  * Half duplex: exactly one ADC and DAC_OUT1/DAC_OUT2 pair carries the
  * "live" signal at a time, chosen by tx_active. RX reads IF off hadc1
  * (ADC1 ch4, via OPAMP1) and writes demodulated audio to DAC_OUT1. TX
@@ -261,7 +388,18 @@ static void audio_dma_start(void)
     }
     else
     {
-        HAL_DAC_Start_DMA(&hdac1, DAC_CHANNEL_1, (uint32_t *)dac_buffer, dac_len, DAC_ALIGN_12B_R);
+        /* SRC_USB: RX audio goes to the PC, so park DAC_OUT1 at mid-scale
+           rather than DMA silence into it (F746: removes a steady DAC
+           interrupt cadence that interacted with USB audio timing). */
+        if (audio_source == AUDIO_SRC_USB)
+        {
+            HAL_DAC_Start(&hdac1, DAC_CHANNEL_1);
+            HAL_DAC_SetValue(&hdac1, DAC_CHANNEL_1, DAC_ALIGN_12B_R, DAC_MID);
+        }
+        else
+        {
+            HAL_DAC_Start_DMA(&hdac1, DAC_CHANNEL_1, (uint32_t *)dac_buffer, dac_len, DAC_ALIGN_12B_R);
+        }
         HAL_ADC_Start_DMA(&hadc1, (uint32_t *)adc_buffer, adc_len);
     }
 }
@@ -279,6 +417,11 @@ static void audio_dma_restart(void)
    so main() can run this exact sequence unconditionally at boot. */
 static void radio_apply_mode(int mode)
 {
+    /* FreeDV is analog-only (see audio_source_set()) - entering one while
+       on USB drops back to analog rather than going silent. */
+    if (mode_is_freedv(mode) && audio_source == AUDIO_SRC_USB)
+        audio_source_set(AUDIO_SRC_ANALOG);
+
     uint32_t want = block_size_for(mode);
 
     HAL_ADC_Stop_DMA(&hadc1);
@@ -288,6 +431,9 @@ static void radio_apply_mode(int mode)
 
     MODE       = mode;
     block_size = want;
+
+    /* New block size/cadence - restart the USB mic ring from clean. */
+    USBD_AUDIO_DUPLEX_ResetMic(&hUsbDeviceFS);
 
     dsp_and_dma_flush();
 
@@ -319,6 +465,11 @@ int radio_tx_on(void)
 
     tx_rearm  = 1;
     tx_active = 1;
+    /* Nothing drains the USB speaker ring during RX, and the USB mic
+       switches producer (rx_capture -> mic_tx_update) here - start both
+       clean. */
+    USBD_AUDIO_DUPLEX_ResetSpeaker(&hUsbDeviceFS);
+    USBD_AUDIO_DUPLEX_ResetMic(&hUsbDeviceFS);
     dsp_and_dma_flush();
     audio_dma_restart();
     /* No TX indicator LED wired up in this .ioc yet (F746 used LD3, not
@@ -330,6 +481,7 @@ void radio_tx_off(void)
 {
     tx_active = 0;
     if (mode_is_freedv(MODE) && freedv_ok) freedv_chain_set_tx(0);
+    USBD_AUDIO_DUPLEX_ResetMic(&hUsbDeviceFS);
     dsp_and_dma_flush();
     audio_dma_restart();
 }
@@ -522,6 +674,7 @@ Error_Handler();
   HAL_OPAMP_Start(&hopamp1);
 
   radio_apply_mode(MODE);
+  USBD_AUDIO_DUPLEX_ResetSpeaker(&hUsbDeviceFS);   /* same boot sequence as F746 */
 
   HAL_TIM_Base_Start(&htim2);
 
@@ -545,6 +698,17 @@ Error_Handler();
        cw_tx_process_block(), not here. */
     cw_keyer_poll();
 
+    /* CDC-ACM serial port: the CAT command layer isn't ported yet, so for
+       now just echo whatever arrives - proves the port end to end - and
+       keep the bulk IN transfer moving. */
+    {
+        uint8_t buf[32];
+        uint32_t got = USBD_AD_CDC_Read(&hUsbDeviceFS, buf, sizeof(buf));
+        if (got)
+            (void)USBD_AD_CDC_Write(&hUsbDeviceFS, buf, got);
+        USBD_AD_CDC_Poll(&hUsbDeviceFS);
+    }
+
     /* Control changes from the HMI (CM4) - mode, PTT, CW pitch/WPM/keyer
        type. Polled at main-loop rate, not audio-block rate - this is
        control-plane only, same cadence hmi_poll() ran at on F746. */
@@ -564,6 +728,8 @@ Error_Handler();
             cw_keyer_type_set(cmd.cw_keyer_type);
         if (cmd.mic_gain != last_cmd.mic_gain)
             mic_gain = cmd.mic_gain;
+        if (cmd.audio_usb != last_cmd.audio_usb)
+            audio_source_set(cmd.audio_usb ? AUDIO_SRC_USB : AUDIO_SRC_ANALOG);
 
         /* CW's own live key/paddle (cw_keyer_poll() above) starts/stops TX
            itself, independent of this ptt field - only apply it for the
@@ -603,6 +769,14 @@ Error_Handler();
           for (uint32_t i = 0; i < n; i++)
             tx_mic[i] = adc_buffer[(tx_rd + i) % ADC_RING_LEN];
 
+          if (audio_source == AUDIO_SRC_USB)
+          {
+              static int16_t pcm[BLOCK_SIZE_MAX / 2];
+              USBD_AUDIO_DUPLEX_GetSpeakerAudio(&hUsbDeviceFS, pcm, n);
+              for (uint32_t i = 0; i < n; i++)
+                  tx_mic[i] = pcm16_to_adc_sample(pcm[i]);
+          }
+
           tx_rd = (tx_rd + n) % ADC_RING_LEN;
           freedv_tx_feed(tx_mic, n);
         }
@@ -619,6 +793,7 @@ Error_Handler();
                  freedv_chain_modem_avail48() >= (int)n)
           {
             freedv_tx_produce(&dac_buffer[dac_wr], n);
+            usb_audio_mic_tx_update(NULL, n);   /* FreeDV TX: silence to the PC */
             dac_wr = (dac_wr + n) % DAC_RING_LEN;
             ahead += n;
           }
@@ -626,12 +801,14 @@ Error_Handler();
       }
       else if (dac_block_processing == 1)
       {
-          tx_process_block(&adc_buffer[0], &dac_buffer[0], &sidetone_buffer[0], n);
+          tx_process_block(usb_audio_tx_source(&adc_buffer[0], n), &dac_buffer[0], &sidetone_buffer[0], n);
+          usb_audio_mic_tx_update(&sidetone_buffer[0], n);
           dac_block_processing = 0;
       }
       else if (dac_block_processing == 2)
       {
-          tx_process_block(&adc_buffer[n], &dac_buffer[n], &sidetone_buffer[n], n);
+          tx_process_block(usb_audio_tx_source(&adc_buffer[n], n), &dac_buffer[n], &sidetone_buffer[n], n);
+          usb_audio_mic_tx_update(&sidetone_buffer[n], n);
           dac_block_processing = 0;
       }
     }
@@ -672,6 +849,7 @@ Error_Handler();
           break;
 
         process_block(&adc_buffer[adc_rd], &dac_buffer[dac_half ? n : 0], n);
+        usb_audio_rx_capture(&dac_buffer[dac_half ? n : 0], n);
         adc_rd = (adc_rd + n) % ADC_RING_LEN;
         dac_half ^= 1;
       }
@@ -679,11 +857,13 @@ Error_Handler();
     else if (block_ready == 1)
     {
       process_block(&adc_buffer[0], &dac_buffer[0], block_size / 2);
+      usb_audio_rx_capture(&dac_buffer[0], block_size / 2);
       block_ready = 0;
     }
     else if (block_ready == 2)
     {
       process_block(&adc_buffer[block_size / 2], &dac_buffer[block_size / 2], block_size / 2);
+      usb_audio_rx_capture(&dac_buffer[block_size / 2], block_size / 2);
       block_ready = 0;
     }
 
@@ -699,6 +879,7 @@ Error_Handler();
             status.rx_rms         = rx_rms;
             status.tx_active      = tx_active;
             status.mode           = MODE;
+            status.audio_usb      = (audio_source == AUDIO_SRC_USB);
             status.freedv_synced  = freedv_ok ? freedv_chain_synced() : 0;
             status.freedv_snr_db  = freedv_ok ? freedv_chain_snr() : 0.0f;
             status.freedv_foff_hz     = freedv_ok ? freedv_chain_foff() : 0.0f;

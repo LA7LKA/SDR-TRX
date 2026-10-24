@@ -63,7 +63,7 @@
   */
 
 /*---------- -----------*/
-#define USBD_MAX_NUM_INTERFACES     1U
+#define USBD_MAX_NUM_INTERFACES     5U   /* AudioControl + 2x AudioStreaming + CDC Comm + CDC Data */
 /*---------- -----------*/
 #define USBD_MAX_NUM_CONFIGURATION     1U
 /*---------- -----------*/
@@ -71,7 +71,7 @@
 /*---------- -----------*/
 #define USBD_DEBUG_LEVEL     0U
 /*---------- -----------*/
-#define USBD_LPM_ENABLED     1U
+#define USBD_LPM_ENABLED     0U   /* no BOS descriptor - usbd_desc.c (shared with F746) has none */
 /*---------- -----------*/
 #define USBD_SELF_POWERED     1U
 /*---------- -----------*/

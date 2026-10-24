@@ -21,4 +21,9 @@ void hmi_poll(void);
    IPC command directly. */
 void hmi_set_mode(int32_t mode);
 
+/* Audio routing (USB vs analog) - BTN_ENTER and console.c's "src".
+   hmi_audio_usb_actual() is what CM7 last reported as in effect. */
+void hmi_set_audio_usb(int32_t usb);
+int32_t hmi_audio_usb_actual(void);
+
 #endif
