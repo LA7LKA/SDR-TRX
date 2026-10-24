@@ -47,6 +47,8 @@
 #define MODE_FREEDV_700E  6  // FreeDV 700E, shorter frame than 700D, faster reacquire
 #define MODE_AM           7  // AM, envelope detection off the complex baseband
 #define MODE_CW            8 // CW, SSB demod into a narrow filter at the tone pitch
+#define MODE_IQ            9 // raw I/Q pass-through: ADC1/ADC2 -> USB stereo (RX),
+                             // USB stereo -> DAC1 ch1/ch2 (TX); the PC does the DSP
 
 extern int MODE;   // current mode, default MODE_USB
 

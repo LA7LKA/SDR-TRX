@@ -11,6 +11,7 @@ static const char *names[] = {
     [MODE_FREEDV_700E]  = "FreeDV 700E",
     [MODE_AM]           = "AM",
     [MODE_CW]           = "CW",
+    [MODE_IQ]           = "I/Q",
 };
 #define MODE_COUNT ((int)(sizeof(names) / sizeof(names[0])))
 

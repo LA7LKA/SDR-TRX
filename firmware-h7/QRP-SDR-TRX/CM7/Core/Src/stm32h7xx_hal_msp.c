@@ -125,6 +125,22 @@ void HAL_ADC_MspInit(ADC_HandleTypeDef* hadc)
 
     /* USER CODE BEGIN ADC1_MspInit 1 */
 
+    /* I/Q adapter board (see MX_ADC1_Init): I input on PF11 (ADC1 INP2,
+       Zio A5), and ADC1's DMA now reads the dual-mode common data
+       register - one packed 32-bit I/Q pair per transfer, not a halfword. */
+    __HAL_RCC_GPIOF_CLK_ENABLE();
+    GPIO_InitStruct.Pin  = GPIO_PIN_11;
+    GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    HAL_GPIO_Init(GPIOF, &GPIO_InitStruct);
+
+    hdma_adc1.Init.PeriphDataAlignment = DMA_PDATAALIGN_WORD;
+    hdma_adc1.Init.MemDataAlignment    = DMA_MDATAALIGN_WORD;
+    if (HAL_DMA_Init(&hdma_adc1) != HAL_OK)
+    {
+      Error_Handler();
+    }
+
     /* USER CODE END ADC1_MspInit 1 */
   }
   else if(hadc->Instance==ADC2)

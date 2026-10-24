@@ -61,6 +61,7 @@ static const struct { const char *kw; int32_t mode; } mode_kw[] = {
     { "freedv700e",   MODE_FREEDV_700E },
     { "am",           MODE_AM },
     { "cw",           MODE_CW },
+    { "iq",           MODE_IQ },
 };
 #define MODE_KW_COUNT ((int)(sizeof(mode_kw) / sizeof(mode_kw[0])))
 
@@ -69,7 +70,7 @@ static void cmd_help(void)
     console_print("\r\ncommands:\r\n"
                   "  help             this text\r\n"
                   "  status           mode, RX level, FreeDV sync/SNR, CPU load\r\n"
-                  "  mode <name>      nbfm usb lsb am cw freedv1600 freedv2400b freedv700d freedv700e\r\n"
+                  "  mode <name>      nbfm usb lsb am cw iq freedv1600 freedv2400b freedv700d freedv700e\r\n"
                   "  src [usb|analog] audio over USB (PC) or the analog jack/mic; no arg toggles\r\n");
 }
 

@@ -35,7 +35,8 @@ extern volatile uint32_t usb_mic_fade_outs;
   (uint8_t)(frq), (uint8_t)((frq) >> 8), (uint8_t)((frq) >> 16)
 
 #define AUDIO_PACKET_SZE_LE(frq) \
-  (uint8_t)((((frq) / 1000U) * 2U) & 0xFFU), (uint8_t)(((((frq) / 1000U) * 2U) >> 8) & 0xFFU)
+  (uint8_t)((((frq) / 1000U) * 2U * USBD_AD_CHANNELS) & 0xFFU), \
+  (uint8_t)(((((frq) / 1000U) * 2U * USBD_AD_CHANNELS) >> 8) & 0xFFU)
 
 static uint8_t USBD_AD_Init(USBD_HandleTypeDef *pdev, uint8_t cfgidx);
 static uint8_t USBD_AD_DeInit(USBD_HandleTypeDef *pdev, uint8_t cfgidx);
@@ -93,7 +94,7 @@ __ALIGN_BEGIN static uint8_t USBD_AD_CfgDesc[USBD_AD_CONFIG_DESC_SIZ] __ALIGN_EN
   /* ---- Class-specific AC interface header (10: bInCollection=2) ---- */
   0x0A, 0x24, 0x01,                      /* bLength, CS_INTERFACE, HEADER */
   0x00, 0x01,                            /* bcdADC 1.00 */
-  0x46, 0x00,                            /* wTotalLength = 70 (AC cluster only) */
+  0x48, 0x00,                            /* wTotalLength = 72 (AC cluster only) */
   0x02,                                  /* bInCollection */
   0x01, 0x02,                            /* baInterfaceNr(1)=IF1, baInterfaceNr(2)=IF2 */
 
@@ -102,16 +103,16 @@ __ALIGN_BEGIN static uint8_t USBD_AD_CfgDesc[USBD_AD_CONFIG_DESC_SIZ] __ALIGN_EN
   0x01,                                  /* bTerminalID */
   0x01, 0x01,                            /* wTerminalType 0x0101 USB streaming */
   0x00,                                  /* bAssocTerminal */
-  0x01,                                  /* bNrChannels: mono */
-  0x00, 0x00,                            /* wChannelConfig */
+  0x02,                                  /* bNrChannels: stereo (L=I, R=Q in MODE_IQ) */
+  0x03, 0x00,                            /* wChannelConfig: left front | right front */
   0x00, 0x00,                            /* iChannelNames, iTerminal */
 
-  /* ---- Feature Unit 2 (source=1), mute only (9) ---- */
-  0x09, 0x24, 0x06,                      /* bLength, CS_INTERFACE, FEATURE_UNIT */
+  /* ---- Feature Unit 2 (source=1), mute only (10) ---- */
+  0x0A, 0x24, 0x06,                      /* bLength, CS_INTERFACE, FEATURE_UNIT */
   0x02,                                  /* bUnitID */
   0x01,                                  /* bSourceID */
   0x01,                                  /* bControlSize */
-  0x01, 0x00,                            /* bmaControls(master)=MUTE, bmaControls(ch1)=0 */
+  0x01, 0x00, 0x00,                      /* bmaControls(master)=MUTE, (ch1)=0, (ch2)=0 */
   0x00,                                  /* iTerminal */
 
   /* ---- Output Terminal 3 (source=2): physical speaker (9) ---- */
@@ -127,16 +128,16 @@ __ALIGN_BEGIN static uint8_t USBD_AD_CfgDesc[USBD_AD_CONFIG_DESC_SIZ] __ALIGN_EN
   0x04,                                  /* bTerminalID */
   0x01, 0x02,                            /* wTerminalType 0x0201 Microphone */
   0x00,
-  0x01,                                  /* bNrChannels: mono */
-  0x00, 0x00,
+  0x02,                                  /* bNrChannels: stereo */
+  0x03, 0x00,                            /* wChannelConfig: left front | right front */
   0x00, 0x00,
 
-  /* ---- Feature Unit 5 (source=4), mute only (9) ---- */
-  0x09, 0x24, 0x06,
+  /* ---- Feature Unit 5 (source=4), mute only (10) ---- */
+  0x0A, 0x24, 0x06,
   0x05,
   0x04,
   0x01,
-  0x01, 0x00,
+  0x01, 0x00, 0x00,
   0x00,
 
   /* ---- Output Terminal 6 (source=5): USB streaming out (mic path sink) (9) ---- */
@@ -168,7 +169,7 @@ __ALIGN_BEGIN static uint8_t USBD_AD_CfgDesc[USBD_AD_CONFIG_DESC_SIZ] __ALIGN_EN
   /* Format Type I (11) */
   0x0B, 0x24, 0x02,                      /* bLength, CS_INTERFACE, FORMAT_TYPE */
   0x01,                                  /* bFormatType I */
-  0x01,                                  /* bNrChannels: mono */
+  USBD_AD_CHANNELS,                      /* bNrChannels: stereo */
   0x02,                                  /* bSubFrameSize: 2 bytes */
   0x10,                                  /* bBitResolution: 16 */
   0x01,                                  /* bSamFreqType: 1 discrete rate */
@@ -207,7 +208,7 @@ __ALIGN_BEGIN static uint8_t USBD_AD_CfgDesc[USBD_AD_CONFIG_DESC_SIZ] __ALIGN_EN
   /* Format Type I (11) */
   0x0B, 0x24, 0x02,
   0x01,
-  0x01,
+  USBD_AD_CHANNELS,
   0x02,
   0x10,
   0x01,
@@ -935,7 +936,8 @@ void USBD_AUDIO_DUPLEX_FeedMic(USBD_HandleTypeDef *pdev, const int16_t *pcm16, u
      already queued to go out. */
   queued      = (uint32_t)((haudio->in_wr_ptr + USBD_AD_IN_RING_SZE - haudio->in_rd_ptr) % USBD_AD_IN_RING_SZE);
   free_bytes  = USBD_AD_IN_RING_SZE - queued;
-  max_samples = free_bytes / 2U;
+  max_samples = (free_bytes / 2U) & ~1U;   /* whole L,R frames only - an odd
+                                              cap would swap the channels */
   if (n_samples > max_samples)
   {
     n_samples = max_samples;
@@ -1073,7 +1075,7 @@ uint32_t USBD_AUDIO_DUPLEX_GetSpeakerAudio(USBD_HandleTypeDef *pdev, int16_t *pc
      1920 (BLOCK_SIZE_MAX/2), so any constant would be either useless for
      one or unaffordable for the other. Half a block is enough to absorb
      the sawtooth without adding needless latency. */
-  cushion = n_samples / 2U;
+  cushion = (n_samples / 2U) & ~1U;   /* whole L,R frames, see FeedMic() */
 
   if (haudio->out_rd_enable == 0U)
   {

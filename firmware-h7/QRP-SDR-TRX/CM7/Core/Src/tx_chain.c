@@ -744,5 +744,6 @@ void tx_process_block(const uint16_t *in, uint16_t *out, uint16_t *side_out, int
 int tx_supported(int mode)
 {
     return mode == MODE_CW || mode == MODE_USB || mode == MODE_LSB
-        || mode == MODE_NBFM || mode == MODE_AM || mode_is_freedv(mode);
+        || mode == MODE_NBFM || mode == MODE_AM || mode_is_freedv(mode)
+        || mode == MODE_IQ;   /* pass-through, see main.c - never reaches tx_process_block() */
 }

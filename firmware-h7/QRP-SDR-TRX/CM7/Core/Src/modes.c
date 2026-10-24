@@ -21,6 +21,7 @@ static const mode_cfg_t mode_cfg[] = {
     [MODE_FREEDV_700E]  = { "FreeDV 700E",  BLOCK_SIZE_700E,   1, FREEDV_CHAIN_MODE_700E  },
     [MODE_AM]           = { "AM",    BLOCK_SIZE_ANALOG, 0, -1 },
     [MODE_CW]           = { "CW",    BLOCK_SIZE_ANALOG, 0, -1 },
+    [MODE_IQ]           = { "I/Q",   BLOCK_SIZE_ANALOG, 0, -1 },
 };
 
 #define MODE_COUNT ((int)(sizeof(mode_cfg) / sizeof(mode_cfg[0])))

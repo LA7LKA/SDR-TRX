@@ -44,9 +44,16 @@ extern "C" {
 #define USBD_AD_FREQ                    48000U
 #define USBD_AD_BINTERVAL               0x01U
 
-/* One sample (mono, 16-bit) per 1 kHz USB frame at 48 kHz = 96 bytes/ms,
-   exactly, no jitter. */
-#define USBD_AD_PACKET_SZE              ((USBD_AD_FREQ / 1000U) * 2U)
+/* H7 port: stereo in both directions (F746 was mono). Carries raw I/Q in
+   MODE_IQ (L = I, R = Q); every other mode sends the same audio on both
+   channels and reads the left channel back. All sample buffers crossing
+   this API are interleaved L,R int16 pairs, and every sample count is a
+   count of int16 values - always even. */
+#define USBD_AD_CHANNELS                2U
+
+/* 48 frames per 1 kHz USB frame at 48 kHz, 2 channels x 16 bits = 192
+   bytes/ms, exactly, no jitter. */
+#define USBD_AD_PACKET_SZE              ((USBD_AD_FREQ / 1000U) * 2U * USBD_AD_CHANNELS)
 
 #define USBD_AD_OUT_EP                  0x01U   /* speaker: PC -> radio TX audio in  */
 #define USBD_AD_IN_EP                   0x81U   /* mic:     radio RX audio -> PC     */
@@ -121,7 +128,7 @@ extern "C" {
    needs that gap found first - a ring-size change alone isn't enough. */
 #define USBD_AD_IN_RING_SZE             (USBD_AD_PACKET_SZE * 16U)   /* ~16 ms */
 
-#define USBD_AD_CONFIG_DESC_SIZ         0x102U  /* 258 bytes: 192 audio + 66 CDC-ACM, see .c for the byte-by-byte tally */
+#define USBD_AD_CONFIG_DESC_SIZ         0x104U  /* 260 bytes: 194 audio + 66 CDC-ACM (stereo: each feature unit +1 byte), see .c */
 
 typedef enum
 {
@@ -212,11 +219,13 @@ uint8_t USBD_AUDIO_DUPLEX_RegisterInterface(USBD_HandleTypeDef *pdev, USBD_AUDIO
    writes in_wr_ptr/reads out_rd_ptr are not touched here; the USB ISR side
    owns in_rd_ptr/out_wr_ptr). */
 
-/* App -> mic (IN, radio RX audio -> PC). pcm16 mono 16-bit signed. */
+/* App -> mic (IN, radio RX audio -> PC). pcm16 interleaved L,R 16-bit
+   signed; n_samples counts int16 values (2 per frame). */
 void USBD_AUDIO_DUPLEX_FeedMic(USBD_HandleTypeDef *pdev, const int16_t *pcm16, uint32_t n_samples);
 
 /* Speaker (OUT, PC -> radio TX audio) -> app. Fills pcm16 with n_samples
-   samples, zero-padding (silence) if fewer are available. Returns the
+   int16 values (interleaved L,R - so 2 per frame, always even),
+   zero-padding (silence) if fewer are available. Returns the
    number of samples that were genuinely available (for underrun/level
    diagnostics); the output buffer is always fully written. */
 uint32_t USBD_AUDIO_DUPLEX_GetSpeakerAudio(USBD_HandleTypeDef *pdev, int16_t *pcm16, uint32_t n_samples);

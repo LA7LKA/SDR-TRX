@@ -136,8 +136,12 @@ static volatile uint32_t block_size = BLOCK_SIZE_ANALOG;
    linker script), so these aren't zero-init'd by the startup .bss copy -
    each is explicitly filled at runtime below, before its DMA is started. */
 uint16_t dac_buffer[DAC_RING_LEN] __attribute__((section(".dma_buffers")));
-uint16_t adc_buffer[ADC_RING_LEN] __attribute__((section(".dma_buffers")));
-uint16_t sidetone_buffer[BLOCK_SIZE_ANALOG] __attribute__((section(".dma_buffers")));   /* CW sidetone only */
+/* I/Q adapter board: ADC1 (master, I, PF11) and ADC2 (slave, Q, PA6) in
+   dual regular simultaneous mode, both sampled on the same TIM2 edge. One
+   DMA stream reads ADC12_CDR, so each entry is one packed pair: I in bits
+   15:0, Q in bits 31:16, both 16-bit unsigned centred on ADC_MID_16B. */
+uint32_t adc_buffer[ADC_RING_LEN] __attribute__((section(".dma_buffers")));
+uint16_t sidetone_buffer[BLOCK_SIZE_ANALOG] __attribute__((section(".dma_buffers")));   /* CW sidetone; I out in MODE_IQ TX */
 
 volatile uint8_t block_ready = 0;          /* 0 none, 1 first half, 2 second half */
 volatile uint8_t dac_block_processing = 0;
@@ -180,8 +184,21 @@ static uint32_t adc_rd;
 
 static uint32_t adc_dma_pos(void)
 {
-    ADC_HandleTypeDef *adc = tx_active ? &hadc2 : &hadc1;
-    return ADC_RING_LEN - __HAL_DMA_GET_COUNTER(adc->DMA_Handle);
+    /* Dual mode: ADC1's stream carries both channels, RX and TX alike. */
+    return ADC_RING_LEN - __HAL_DMA_GET_COUNTER(hadc1.DMA_Handle);
+}
+
+/* Every mode except MODE_IQ still runs the existing real-IF chains, which
+   take one uint16 channel. Until they're made I/Q-aware, they get the I
+   channel - a real 12 kHz IF in its own right, just without the image
+   rejection Q would add. Returns a static buffer, valid until the next
+   call. */
+static const uint16_t *adc_i_channel(const uint32_t *pairs, uint32_t n)
+{
+    static uint16_t i_block[BLOCK_SIZE_MAX / 2];
+    for (uint32_t k = 0; k < n; k++)
+        i_block[k] = (uint16_t)(pairs[k] & 0xFFFFU);
+    return i_block;
 }
 
 static uint32_t dac_dma_pos(void)
@@ -238,7 +255,10 @@ static void dsp_and_dma_flush(void)
  * other, never mixed. Changed only via audio_source_set().
  */
 typedef enum { AUDIO_SRC_ANALOG = 0, AUDIO_SRC_USB } audio_src_t;
-volatile audio_src_t audio_source = AUDIO_SRC_ANALOG;
+/* USB by default: with the I/Q adapter board, PA6 is the Q input, so
+   there is no analog mic any more, and PA4 doubles as the I output on
+   TX. A T/R switch between audio and IF on the DACs is planned. */
+volatile audio_src_t audio_source = AUDIO_SRC_USB;
 
 extern USBD_HandleTypeDef hUsbDeviceFS;
 
@@ -263,18 +283,19 @@ static inline uint16_t pcm16_to_adc_sample(int16_t pcm)
 }
 
 /* Returns the buffer the (non-buffered) TX modulator should read this
-   block: the ADC slice itself, or a private buffer of USB speaker audio
-   when SRC_USB. Never writes into adc_buffer - ADC2's DMA is still
-   running into it (F746 learned that the hard way: chopped TX audio). */
-static const uint16_t *usb_audio_tx_source(const uint16_t *adc_slice, uint32_t n)
+   block: the ADC's I channel, or a private buffer of USB speaker audio
+   (left channel) when SRC_USB. Never writes into adc_buffer - the ADC DMA
+   is still running into it (F746 learned that the hard way: chopped TX
+   audio). */
+static const uint16_t *usb_audio_tx_source(const uint32_t *adc_slice, uint32_t n)
 {
     static uint16_t usb_tx_buf[BLOCK_SIZE_ANALOG / 2];
-    static int16_t  pcm[BLOCK_SIZE_ANALOG / 2];
+    static int16_t  pcm[BLOCK_SIZE_ANALOG];   /* interleaved L,R */
 
     if (audio_source != AUDIO_SRC_USB || n > (BLOCK_SIZE_ANALOG / 2))
-        return adc_slice;
+        return adc_i_channel(adc_slice, n);
 
-    USBD_AUDIO_DUPLEX_GetSpeakerAudio(&hUsbDeviceFS, pcm, n);
+    USBD_AUDIO_DUPLEX_GetSpeakerAudio(&hUsbDeviceFS, pcm, 2 * n);
 
     /* Every TX chain multiplies by mic_gain, calibrated for a weak analog
        mic. PC audio is already near full scale, so undo that and leave
@@ -283,7 +304,7 @@ static const uint16_t *usb_audio_tx_source(const uint16_t *adc_slice, uint32_t n
     float inv_gain = USB_HEADROOM / mic_gain;
     for (uint32_t i = 0; i < n; i++)
     {
-        int32_t scaled = (int32_t)((float)pcm[i] * inv_gain);
+        int32_t scaled = (int32_t)((float)pcm[2 * i] * inv_gain);
         if (scaled >  32767) scaled =  32767;
         if (scaled < -32768) scaled = -32768;
         usb_tx_buf[i] = pcm16_to_adc_sample((int16_t)scaled);
@@ -291,9 +312,9 @@ static const uint16_t *usb_audio_tx_source(const uint16_t *adc_slice, uint32_t n
     return usb_tx_buf;
 }
 
-/* Shared by the two functions below: one runs only during RX, the other
-   only during TX, so they never overlap. */
-static int16_t usb_mic_pcm[BLOCK_SIZE_MAX / 2];
+/* Shared by the functions below: they run in mutually exclusive states
+   (RX / TX / MODE_IQ), so they never overlap. Interleaved L,R. */
+static int16_t usb_mic_pcm[BLOCK_SIZE_MAX];
 
 /* After an RX process_block(): when SRC_USB, send that block to the PC
    instead of (not as well as) the headphone jack. When analog, keep the
@@ -302,17 +323,19 @@ static void usb_audio_rx_capture(uint16_t *dac_slice, uint32_t n)
 {
     if (audio_source != AUDIO_SRC_USB)
     {
-        memset(usb_mic_pcm, 0, n * sizeof(usb_mic_pcm[0]));
+        memset(usb_mic_pcm, 0, 2 * n * sizeof(usb_mic_pcm[0]));
     }
     else
     {
         for (uint32_t i = 0; i < n; i++)
         {
-            usb_mic_pcm[i] = dac_sample_to_pcm16(dac_slice[i]);
+            int16_t s = dac_sample_to_pcm16(dac_slice[i]);
+            usb_mic_pcm[2 * i]     = s;   /* same audio on L and R */
+            usb_mic_pcm[2 * i + 1] = s;
             dac_slice[i] = DAC_MID;
         }
     }
-    USBD_AUDIO_DUPLEX_FeedMic(&hUsbDeviceFS, usb_mic_pcm, n);
+    USBD_AUDIO_DUPLEX_FeedMic(&hUsbDeviceFS, usb_mic_pcm, 2 * n);
 }
 
 /* USB mic during TX: only CW's sidetone has anything to send (mirrors
@@ -324,15 +347,55 @@ static void usb_audio_mic_tx_update(uint16_t *side_slice, uint32_t n)
     {
         for (uint32_t i = 0; i < n; i++)
         {
-            usb_mic_pcm[i] = dac_sample_to_pcm16(side_slice[i]);
+            int16_t s = dac_sample_to_pcm16(side_slice[i]);
+            usb_mic_pcm[2 * i]     = s;
+            usb_mic_pcm[2 * i + 1] = s;
             side_slice[i] = DAC_MID;
         }
     }
     else
     {
-        memset(usb_mic_pcm, 0, n * sizeof(usb_mic_pcm[0]));
+        memset(usb_mic_pcm, 0, 2 * n * sizeof(usb_mic_pcm[0]));
     }
-    USBD_AUDIO_DUPLEX_FeedMic(&hUsbDeviceFS, usb_mic_pcm, n);
+    USBD_AUDIO_DUPLEX_FeedMic(&hUsbDeviceFS, usb_mic_pcm, 2 * n);
+}
+
+/*
+ * MODE_IQ: the radio is just a stereo I/Q sound card and the PC does all
+ * the DSP. RX sends each packed ADC pair to USB as L = I, R = Q, offset to
+ * signed but otherwise untouched (no gain, no filtering) so measurements
+ * see the converters as they are. TX takes L/R from USB straight to
+ * DAC_OUT1 (I, PA4) and DAC_OUT2 (Q, PA5), both on the same TIM2 trigger.
+ * audio_source doesn't apply - there is no analog alternative for I/Q.
+ */
+static void iq_rx_block(const uint32_t *pairs, uint32_t n)
+{
+    for (uint32_t k = 0; k < n; k++)
+    {
+        usb_mic_pcm[2 * k]     = (int16_t)((int32_t)(pairs[k] & 0xFFFFU) - 32768);
+        usb_mic_pcm[2 * k + 1] = (int16_t)((int32_t)(pairs[k] >> 16)     - 32768);
+    }
+    USBD_AUDIO_DUPLEX_FeedMic(&hUsbDeviceFS, usb_mic_pcm, 2 * n);
+}
+
+static inline uint16_t pcm16_to_dac_sample(int16_t pcm)
+{
+    return (uint16_t)(DAC_MID + ((int32_t)pcm >> 4));   /* always 0..4095 */
+}
+
+static void iq_tx_block(uint16_t *i_out, uint16_t *q_out, uint32_t n)
+{
+    static int16_t pcm[BLOCK_SIZE_ANALOG];   /* interleaved I,Q */
+
+    USBD_AUDIO_DUPLEX_GetSpeakerAudio(&hUsbDeviceFS, pcm, 2 * n);
+    for (uint32_t k = 0; k < n; k++)
+    {
+        i_out[k] = pcm16_to_dac_sample(pcm[2 * k]);
+        q_out[k] = pcm16_to_dac_sample(pcm[2 * k + 1]);
+    }
+    /* Nothing to monitor on TX - keep the USB IN stream fed with silence. */
+    memset(usb_mic_pcm, 0, 2 * n * sizeof(usb_mic_pcm[0]));
+    USBD_AUDIO_DUPLEX_FeedMic(&hUsbDeviceFS, usb_mic_pcm, 2 * n);
 }
 
 /* The only place audio_source changes. FreeDV stays analog-only, as on
@@ -354,12 +417,48 @@ static void audio_source_set(audio_src_t src)
 }
 
 /*
- * Half duplex: exactly one ADC and DAC_OUT1/DAC_OUT2 pair carries the
- * "live" signal at a time, chosen by tx_active. RX reads IF off hadc1
- * (ADC1 ch4, via OPAMP1) and writes demodulated audio to DAC_OUT1. TX
- * reads the mic off hadc2 (ADC2 ch3) and writes modulated IF to DAC_OUT2.
- * One exception: DAC_OUT1 also keeps running during CW TX, carrying the
- * sidetone, same as F746.
+ * HAL's ADC_DMAConvCplt() stops calling HAL_ADC_ConvCpltCallback() once
+ * hadc->State has HAL_ADC_STATE_ERROR_DMA set - and nothing ever clears
+ * that bit again, not even a DMA restart - while the half-transfer path
+ * has no such check. Seen on hardware with the dual-ADC setup: one
+ * transient DMA error (state 0x140, ErrorCode DMA, no flags left in the
+ * stream registers) and every other 256-frame block was silently lost for
+ * the rest of the session - one gap per DMA lap over USB. So the stream's
+ * complete/error events go straight to our own handlers instead, and an
+ * error is counted rather than allowed to wedge the RX path.
+ */
+volatile uint32_t adc_dma_errors = 0;
+
+static void adc_dma_cplt(DMA_HandleTypeDef *hdma)
+{
+    (void)hdma;
+    HAL_ADC_ConvCpltCallback(&hadc1);
+}
+
+static void adc_dma_error(DMA_HandleTypeDef *hdma)
+{
+    (void)hdma;
+    adc_dma_errors++;
+}
+
+static void adc_iq_start(uint32_t len)
+{
+    CLEAR_BIT(hadc1.State, HAL_ADC_STATE_ERROR_DMA | HAL_ADC_STATE_ERROR_INTERNAL);
+    hadc1.ErrorCode = HAL_ADC_ERROR_NONE;
+    HAL_ADCEx_MultiModeStart_DMA(&hadc1, adc_buffer, len);
+    /* Start_DMA installs HAL's own handlers - replace them. The first
+       completion is a whole half-lap away, so there's no race. */
+    hadc1.DMA_Handle->XferCpltCallback  = adc_dma_cplt;
+    hadc1.DMA_Handle->XferErrorCallback = adc_dma_error;
+}
+
+/*
+ * Half duplex. The ADC pair (I on ADC1/PF11, Q on ADC2/PA6, dual
+ * simultaneous - see adc_buffer) runs in both RX and TX. RX writes
+ * demodulated audio to DAC_OUT1 (or parks it when audio goes over USB);
+ * TX writes modulated IF to DAC_OUT2, with DAC_OUT1 carrying the CW
+ * sidetone, same as F746. MODE_IQ instead drives both DACs as I/Q on TX
+ * and leaves DAC_OUT1 parked on RX.
  */
 static void audio_dma_start(void)
 {
@@ -376,22 +475,24 @@ static void audio_dma_start(void)
 
     if (tx_active)
     {
+        /* DAC_OUT2: modulated IF, or Q in MODE_IQ. DAC_OUT1: CW sidetone,
+           or I in MODE_IQ (sidetone_buffer doubles as the I buffer - both
+           are block_size long, see BLOCK_SIZE_ANALOG). */
         HAL_DAC_Start_DMA(&hdac1, DAC_CHANNEL_2, (uint32_t *)dac_buffer, dac_len, DAC_ALIGN_12B_R);
-        if (MODE == MODE_CW)
+        if (MODE == MODE_CW || MODE == MODE_IQ)
             HAL_DAC_Start_DMA(&hdac1, DAC_CHANNEL_1, (uint32_t *)sidetone_buffer, dac_len, DAC_ALIGN_12B_R);
         else
         {
             HAL_DAC_Start(&hdac1, DAC_CHANNEL_1);
             HAL_DAC_SetValue(&hdac1, DAC_CHANNEL_1, DAC_ALIGN_12B_R, DAC_MID);
         }
-        HAL_ADC_Start_DMA(&hadc2, (uint32_t *)adc_buffer, adc_len);
     }
     else
     {
-        /* SRC_USB: RX audio goes to the PC, so park DAC_OUT1 at mid-scale
-           rather than DMA silence into it (F746: removes a steady DAC
-           interrupt cadence that interacted with USB audio timing). */
-        if (audio_source == AUDIO_SRC_USB)
+        /* SRC_USB (and MODE_IQ): RX goes to the PC, so park DAC_OUT1 at
+           mid-scale rather than DMA silence into it (F746: removes a
+           steady DAC interrupt cadence that interacted with USB timing). */
+        if (audio_source == AUDIO_SRC_USB || MODE == MODE_IQ)
         {
             HAL_DAC_Start(&hdac1, DAC_CHANNEL_1);
             HAL_DAC_SetValue(&hdac1, DAC_CHANNEL_1, DAC_ALIGN_12B_R, DAC_MID);
@@ -400,14 +501,13 @@ static void audio_dma_start(void)
         {
             HAL_DAC_Start_DMA(&hdac1, DAC_CHANNEL_1, (uint32_t *)dac_buffer, dac_len, DAC_ALIGN_12B_R);
         }
-        HAL_ADC_Start_DMA(&hadc1, (uint32_t *)adc_buffer, adc_len);
     }
+    adc_iq_start(adc_len);
 }
 
 static void audio_dma_restart(void)
 {
-    HAL_ADC_Stop_DMA(&hadc1);
-    HAL_ADC_Stop_DMA(&hadc2);
+    HAL_ADCEx_MultiModeStop_DMA(&hadc1);
     HAL_DAC_Stop_DMA(&hdac1, DAC_CHANNEL_1);
     HAL_DAC_Stop_DMA(&hdac1, DAC_CHANNEL_2);
     audio_dma_start();
@@ -424,8 +524,7 @@ static void radio_apply_mode(int mode)
 
     uint32_t want = block_size_for(mode);
 
-    HAL_ADC_Stop_DMA(&hadc1);
-    HAL_ADC_Stop_DMA(&hadc2);
+    HAL_ADCEx_MultiModeStop_DMA(&hadc1);
     HAL_DAC_Stop_DMA(&hdac1, DAC_CHANNEL_1);
     HAL_DAC_Stop_DMA(&hdac1, DAC_CHANNEL_2);
 
@@ -640,7 +739,7 @@ Error_Handler();
      every RAM access from codec2/OFDM's FFT- and table-heavy work was
      paying full AXI latency instead of hitting cache.
      Fix: those three buffers now live in their own linker section
-     (.dma_buffers, stm32h755xx_flash_CM7.ld), a single 32KB/32KB-aligned
+     (.dma_buffers, stm32h755xx_flash_CM7.ld), a single 64KB/64KB-aligned
      block sized to hold all three. One MPU region marks exactly that
      block as non-cacheable/shareable (same pattern as ipc_mailbox.c's
      region for the D3 SRAM4 IPC struct, which is shared with CM4 for the
@@ -654,7 +753,7 @@ Error_Handler();
 
     MPU_InitStruct.Enable           = MPU_REGION_ENABLE;
     MPU_InitStruct.BaseAddress      = (uint32_t)&__dma_buffers_start;
-    MPU_InitStruct.Size             = MPU_REGION_SIZE_32KB;
+    MPU_InitStruct.Size             = MPU_REGION_SIZE_64KB;
     MPU_InitStruct.AccessPermission = MPU_REGION_FULL_ACCESS;
     MPU_InitStruct.IsBufferable     = MPU_ACCESS_NOT_BUFFERABLE;
     MPU_InitStruct.IsCacheable      = MPU_ACCESS_NOT_CACHEABLE;
@@ -671,7 +770,9 @@ Error_Handler();
 
   SCB_EnableDCache();
 
-  HAL_OPAMP_Start(&hopamp1);
+  /* OPAMP1 (PB0 -> PC4 follower, the old single-channel RX input) is no
+     longer started: the I/Q adapter board feeds PF11/PA6 directly, and PC4
+     is wired to the Ethernet PHY's RXD0 by default (UM2408, SB63 ON). */
 
   radio_apply_mode(MODE);
   USBD_AUDIO_DUPLEX_ResetSpeaker(&hUsbDeviceFS);   /* same boot sequence as F746 */
@@ -767,14 +868,14 @@ Error_Handler();
         while (((adc_dma_pos() + ADC_RING_LEN - tx_rd) % ADC_RING_LEN) >= n)
         {
           for (uint32_t i = 0; i < n; i++)
-            tx_mic[i] = adc_buffer[(tx_rd + i) % ADC_RING_LEN];
+            tx_mic[i] = (uint16_t)(adc_buffer[(tx_rd + i) % ADC_RING_LEN] & 0xFFFFU);
 
           if (audio_source == AUDIO_SRC_USB)
           {
-              static int16_t pcm[BLOCK_SIZE_MAX / 2];
-              USBD_AUDIO_DUPLEX_GetSpeakerAudio(&hUsbDeviceFS, pcm, n);
+              static int16_t pcm[BLOCK_SIZE_MAX];   /* interleaved L,R */
+              USBD_AUDIO_DUPLEX_GetSpeakerAudio(&hUsbDeviceFS, pcm, 2 * n);
               for (uint32_t i = 0; i < n; i++)
-                  tx_mic[i] = pcm16_to_adc_sample(pcm[i]);
+                  tx_mic[i] = pcm16_to_adc_sample(pcm[2 * i]);
           }
 
           tx_rd = (tx_rd + n) % ADC_RING_LEN;
@@ -798,6 +899,15 @@ Error_Handler();
             ahead += n;
           }
         }
+      }
+      else if (MODE == MODE_IQ)
+      {
+          if (dac_block_processing)
+          {
+              uint32_t off = (dac_block_processing == 1) ? 0 : n;
+              iq_tx_block(&sidetone_buffer[off], &dac_buffer[off], n);
+              dac_block_processing = 0;
+          }
       }
       else if (dac_block_processing == 1)
       {
@@ -848,21 +958,30 @@ Error_Handler();
         if (!dac_half_free)
           break;
 
-        process_block(&adc_buffer[adc_rd], &dac_buffer[dac_half ? n : 0], n);
+        process_block(adc_i_channel(&adc_buffer[adc_rd], n), &dac_buffer[dac_half ? n : 0], n);
         usb_audio_rx_capture(&dac_buffer[dac_half ? n : 0], n);
         adc_rd = (adc_rd + n) % ADC_RING_LEN;
         dac_half ^= 1;
       }
     }
+    else if (MODE == MODE_IQ)
+    {
+      if (block_ready)
+      {
+        uint32_t n = block_size / 2;
+        iq_rx_block(&adc_buffer[(block_ready == 1) ? 0 : n], n);
+        block_ready = 0;
+      }
+    }
     else if (block_ready == 1)
     {
-      process_block(&adc_buffer[0], &dac_buffer[0], block_size / 2);
+      process_block(adc_i_channel(&adc_buffer[0], block_size / 2), &dac_buffer[0], block_size / 2);
       usb_audio_rx_capture(&dac_buffer[0], block_size / 2);
       block_ready = 0;
     }
     else if (block_ready == 2)
     {
-      process_block(&adc_buffer[block_size / 2], &dac_buffer[block_size / 2], block_size / 2);
+      process_block(adc_i_channel(&adc_buffer[block_size / 2], block_size / 2), &dac_buffer[block_size / 2], block_size / 2);
       usb_audio_rx_capture(&dac_buffer[block_size / 2], block_size / 2);
       block_ready = 0;
     }
@@ -1074,6 +1193,26 @@ static void MX_ADC1_Init(void)
     Error_Handler();
   }
   /* USER CODE BEGIN ADC1_Init 2 */
+
+  /* I/Q adapter board: overrides the CubeMX settings above (independent
+     mode, ch4 via OPAMP1). ADC1 becomes the master of a dual regular-
+     simultaneous pair with ADC2, so I (ADC1 INP2, PF11 = Zio A5) and Q
+     (ADC2 INP3, PA6 = Zio D12) are sampled on the same TIM2 edge. Packed
+     32-bit data (DAMDF 32_10_BITS) lets one DMA stream on ADC1 move both.
+     Kept in USER CODE so a CubeMX regen doesn't silently undo it - but
+     the .ioc should be updated to match. */
+  multimode.Mode             = ADC_DUALMODE_REGSIMULT;
+  multimode.DualModeData     = ADC_DUALMODEDATAFORMAT_32_10_BITS;
+  multimode.TwoSamplingDelay = ADC_TWOSAMPLINGDELAY_1CYCLE;
+  if (HAL_ADCEx_MultiModeConfigChannel(&hadc1, &multimode) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfig.Channel = ADC_CHANNEL_2;   /* PF11 */
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
 
   /* USER CODE END ADC1_Init 2 */
 

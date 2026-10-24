@@ -86,7 +86,7 @@ static float   desired_cw_pitch_hz = CW_PITCH_DEFAULT_HZ;
 static int32_t desired_cw_wpm      = 20;
 static int32_t desired_cw_keyer_type = 0;
 static float   desired_mic_gain    = 1.0f;
-static int32_t desired_audio_usb   = 0;
+static int32_t desired_audio_usb   = 1;   /* matches CM7's boot default */
 
 /* Was a hmi_poll()-local static; promoted to file scope so hmi_set_mode()
    (console.c's "mode" command) can reuse it too, preserving the same

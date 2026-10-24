@@ -18,6 +18,7 @@
 #define MODE_FREEDV_700E  6
 #define MODE_AM           7
 #define MODE_CW            8
+#define MODE_IQ            9
 
 const char *mode_name(int mode);
 int         mode_count(void);

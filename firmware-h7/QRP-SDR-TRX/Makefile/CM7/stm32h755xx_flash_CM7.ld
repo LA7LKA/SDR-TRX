@@ -230,13 +230,14 @@ SECTIONS
      the DMA1/DMA2 controllers write/read these directly and aren't
      cache-coherent with the CPU, so they're pulled out of the now-enabled
      D-Cache via an MPU region covering exactly this section (see
-     MPU_InitStruct in main.c). 32KB, 32KB-aligned: ARMv7-M MPU regions
-     need a power-of-two size with a naturally-aligned base address. */
-  .dma_buffers (NOLOAD) : ALIGN(0x8000)
+     MPU_InitStruct in main.c). 64KB, 64KB-aligned: ARMv7-M MPU regions
+     need a power-of-two size with a naturally-aligned base address. (Was
+     32KB until adc_buffer became 32-bit packed I/Q pairs - 30KB alone.) */
+  .dma_buffers (NOLOAD) : ALIGN(0x10000)
   {
     __dma_buffers_start = .;
     *(.dma_buffers)
-    . = ALIGN(0x8000);
+    . = ALIGN(0x10000);
     __dma_buffers_end = .;
   } >RAM
 
