@@ -69,6 +69,18 @@ blocks:
     coordinate: [200, 12]
     rotation: 0
     state: enabled
+- name: q_trim_db
+  id: variable
+  parameters:
+    comment: I/Q gain balance - dB applied to Q before the I/Q sound card
+    value: '-8.0'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [360, 12]
+    rotation: 0
+    state: enabled
 - name: samp_rate
   id: variable
   parameters:
@@ -187,9 +199,9 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [880, 512.0]
+    coordinate: [880, 520.0]
     rotation: 0
-    state: disabled
+    state: enabled
 - name: audio_sink_0_0_1
   id: audio_sink
   parameters:
@@ -241,13 +253,31 @@ blocks:
     coordinate: [328, 776.0]
     rotation: 0
     state: enabled
+- name: audio_sink_0_0_iq_qtrim
+  id: blocks_multiply_const_vxx
+  parameters:
+    affinity: ''
+    alias: ''
+    comment: Q gain trim, see q_trim_db
+    const: 10**(q_trim_db/20)
+    maxoutbuf: '0'
+    minoutbuf: '0'
+    type: float
+    vlen: '1'
+  states:
+    bus_sink: false
+    bus_source: false
+    bus_structure: null
+    coordinate: [544, 868.0]
+    rotation: 0
+    state: enabled
 - name: audio_sink_0_1
   id: audio_sink
   parameters:
     affinity: ''
     alias: ''
     comment: ''
-    device_name: plughw:CARD=USB,DEV=0
+    device_name: plughw:CARD=J380,DEV=0
     num_inputs: '1'
     ok_to_block: 'True'
     samp_rate: samp_rate
@@ -257,7 +287,7 @@ blocks:
     bus_structure: null
     coordinate: [1200, 192.0]
     rotation: 0
-    state: disabled
+    state: enabled
 - name: audio_source_0
   id: audio_source
   parameters:
@@ -276,7 +306,7 @@ blocks:
     bus_structure: null
     coordinate: [8, 144.0]
     rotation: 0
-    state: disabled
+    state: enabled
 - name: audio_source_0_0
   id: audio_source
   parameters:
@@ -295,7 +325,7 @@ blocks:
     bus_structure: null
     coordinate: [8, 600.0]
     rotation: 0
-    state: disabled
+    state: enabled
 - name: audio_source_0_1
   id: audio_source
   parameters:
@@ -332,9 +362,9 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [640, 512.0]
+    coordinate: [640, 520.0]
     rotation: 0
-    state: disabled
+    state: enabled
 - name: audio_source_0_iq_f2c
   id: blocks_float_to_complex
   parameters:
@@ -350,7 +380,7 @@ blocks:
     bus_structure: null
     coordinate: [228, 224.0]
     rotation: 0
-    state: disabled
+    state: enabled
 - name: band_pass_filter_0
   id: band_pass_filter
   parameters:
@@ -375,7 +405,7 @@ blocks:
     bus_structure: null
     coordinate: [584, 116.0]
     rotation: 0
-    state: disabled
+    state: enabled
 - name: band_pass_filter_0_0
   id: band_pass_filter
   parameters:
@@ -416,7 +446,7 @@ blocks:
     bus_structure: null
     coordinate: [792, 176.0]
     rotation: 0
-    state: disabled
+    state: enabled
 - name: blocks_complex_to_real_0_0
   id: blocks_complex_to_real
   parameters:
@@ -454,7 +484,7 @@ blocks:
     bus_structure: null
     coordinate: [8, 464.0]
     rotation: 0
-    state: enabled
+    state: disabled
 - name: blocks_multiply_const_vxx_0
   id: blocks_multiply_const_vxx
   parameters:
@@ -472,7 +502,7 @@ blocks:
     bus_structure: null
     coordinate: [952, 168.0]
     rotation: 0
-    state: disabled
+    state: enabled
 - name: blocks_multiply_xx_0
   id: blocks_multiply_xx
   parameters:
@@ -490,7 +520,7 @@ blocks:
     bus_structure: null
     coordinate: [416, 160.0]
     rotation: 0
-    state: disabled
+    state: enabled
 - name: blocks_multiply_xx_0_0
   id: blocks_multiply_xx
   parameters:
@@ -506,27 +536,9 @@ blocks:
     bus_sink: false
     bus_source: false
     bus_structure: null
-    coordinate: [576, 584.0]
+    coordinate: [576, 592.0]
     rotation: 0
     state: enabled
-- name: hilbert_fc_0
-  id: hilbert_fc
-  parameters:
-    affinity: ''
-    alias: ''
-    beta: '6.76'
-    comment: real IF to analytic
-    maxoutbuf: '0'
-    minoutbuf: '0'
-    num_taps: '129'
-    win: window.WIN_HANN
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate: [240, 152.0]
-    rotation: 0
-    state: disabled
 - name: hilbert_fc_0_0
   id: hilbert_fc
   parameters:
@@ -625,7 +637,7 @@ blocks:
     bus_structure: null
     coordinate: [568, 296.0]
     rotation: 0
-    state: disabled
+    state: enabled
 - name: qtgui_waterfall_sink_x_0
   id: qtgui_waterfall_sink_x
   parameters:
@@ -686,50 +698,16 @@ blocks:
     bus_structure: null
     coordinate: [832, 320.0]
     rotation: 0
-    state: disabled
-- name: audio_sink_0_0_iq_qtrim
-  id: blocks_multiply_const_vxx
-  parameters:
-    affinity: ''
-    alias: ''
-    comment: Q gain trim, see q_trim_db
-    const: 10**(q_trim_db/20)
-    maxoutbuf: '0'
-    minoutbuf: '0'
-    type: float
-    vlen: '1'
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate: [544, 868.0]
-    rotation: 0
-    state: enabled
-- name: q_trim_db
-  id: variable
-  parameters:
-    affinity: ''
-    alias: ''
-    comment: 'I/Q gain balance - dB applied to Q before the I/Q sound card'
-    maxoutbuf: '0'
-    minoutbuf: '0'
-    value: '-8.0'
-  states:
-    bus_sink: false
-    bus_source: false
-    bus_structure: null
-    coordinate: [360, 12]
-    rotation: 0
     state: enabled
 
 connections:
-- [audio_sink_0_0_iq_qtrim, '0', audio_sink_0_0, '1']
 - [analog_sig_source_x_0, '0', blocks_multiply_xx_0, '1']
 - [analog_sig_source_x_0, '0', blocks_multiply_xx_0_0, '0']
 - [analog_sig_source_x_0_0, '0', band_pass_filter_0_0, '0']
 - [audio_sink_0_0_iq_c2f, '0', audio_sink_0_0, '0']
 - [audio_sink_0_0_iq_c2f, '1', audio_sink_0_0_iq_qtrim, '0']
 - [audio_sink_0_0_iq_hilbert, '0', audio_sink_0_0_iq_c2f, '0']
+- [audio_sink_0_0_iq_qtrim, '0', audio_sink_0_0, '1']
 - [audio_source_0, '0', audio_source_0_iq_f2c, '0']
 - [audio_source_0, '1', audio_source_0_iq_f2c, '1']
 - [audio_source_0_0, '0', band_pass_filter_0_0, '0']
