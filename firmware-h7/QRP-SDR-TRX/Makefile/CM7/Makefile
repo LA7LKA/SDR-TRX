@@ -94,6 +94,7 @@ C_SOURCES =  \
 ../../CM7/Core/Src/cw_paddle.c \
 ../../CM7/Core/Src/freedv_chain.c \
 ../../CM7/Core/Src/ipc_mailbox.c \
+../../CM7/Core/Src/iq_corr.c \
 ../../Drivers/CMSIS/DSP/Source/FilteringFunctions/arm_fir_f32.c \
 ../../Drivers/CMSIS/DSP/Source/FilteringFunctions/arm_fir_init_f32.c \
 ../../Drivers/CMSIS/DSP/Source/FilteringFunctions/arm_biquad_cascade_df1_f32.c \

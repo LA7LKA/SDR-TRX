@@ -34,6 +34,7 @@
 #include "freedv_chain.h"
 #include "cw_paddle.h"
 #include "ipc_mailbox.h"
+#include "iq_corr.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -363,9 +364,11 @@ static void usb_audio_mic_tx_update(uint16_t *side_slice, uint32_t n)
 /*
  * MODE_IQ: the radio is just a stereo I/Q sound card and the PC does all
  * the DSP. RX sends each packed ADC pair to USB as L = I, R = Q, offset to
- * signed but otherwise untouched (no gain, no filtering) so measurements
- * see the converters as they are. TX takes L/R from USB straight to
- * DAC_OUT1 (I, PA4) and DAC_OUT2 (Q, PA5), both on the same TIM2 trigger.
+ * signed, then through iq_corr (automatic DC/gain/phase correction, see
+ * iq_corr.h) - no other gain or filtering. Set iqc_enable = 0 from the
+ * debugger to send the converters' raw output instead, for measurements.
+ * TX takes L/R from USB straight to DAC_OUT1 (I, PA4) and DAC_OUT2
+ * (Q, PA5), both on the same TIM2 trigger.
  * audio_source doesn't apply - there is no analog alternative for I/Q.
  */
 static void iq_rx_block(const uint32_t *pairs, uint32_t n)
@@ -375,6 +378,7 @@ static void iq_rx_block(const uint32_t *pairs, uint32_t n)
         usb_mic_pcm[2 * k]     = (int16_t)((int32_t)(pairs[k] & 0xFFFFU) - 32768);
         usb_mic_pcm[2 * k + 1] = (int16_t)((int32_t)(pairs[k] >> 16)     - 32768);
     }
+    iq_corr_process(usb_mic_pcm, n, 48000.0f);
     USBD_AUDIO_DUPLEX_FeedMic(&hUsbDeviceFS, usb_mic_pcm, 2 * n);
 }
 
